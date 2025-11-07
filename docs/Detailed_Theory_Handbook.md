@@ -5309,3 +5309,495 @@ void Send_Telemetry(void) {
 
 *End of Section 7 - Control System Architecture*
 
+---
+
+## Section 8: Comprehensive References and Resources
+
+This section provides a consolidated, categorized list of learning resources for PMSM motor control and Field Oriented Control. Resources are organized by type and difficulty level to help you continue your learning journey.
+
+### 8.1 Essential Textbooks
+
+#### Beginner to Intermediate
+
+1. **"Power Electronics and Motor Drives"** by Bimal K. Bose
+   - ISBN: 978-0136078104
+   - **Best for:** Comprehensive overview of power electronics and motor control
+   - **Key chapters:** 6 (SVPWM), 9 (Vector Control), 10 (Permanent Magnet Motors)
+   - **Level:** Undergraduate/Graduate
+   - **Why read:** Industry-standard reference, clear explanations, practical focus
+
+2. **"Electric Motor Drives: Modeling, Analysis, and Control"** by R. Krishnan
+   - ISBN: 978-0130910146
+   - **Best for:** Detailed motor modeling and control strategies
+   - **Key chapters:** 4 (PM Motors), 6 (Control Techniques)
+   - **Level:** Graduate
+   - **Why read:** Thorough mathematical treatment with MATLAB examples
+
+3. **"Control of Electric Machine Drive Systems"** by Seung-Ki Sul
+   - ISBN: 978-0470590799
+   - **Best for:** Modern perspective on motor drive control
+   - **Key chapters:** 5 (Coordinate Transformation), 7 (Vector Control of PMSM)
+   - **Level:** Graduate
+   - **Why read:** Excellent FOC explanation, well-structured progression
+
+#### Advanced
+
+4. **"Vector Control of AC Drives"** by Peter Vas
+   - ISBN: 978-0198564126
+   - **Best for:** Deep theoretical understanding of vector control
+   - **Key chapters:** 3-5 (FOC theory and implementation)
+   - **Level:** Graduate/Research
+   - **Why read:** The classic comprehensive treatment, mathematically rigorous
+
+5. **"Advanced Electric Drives: Analysis, Control, and Modeling Using MATLAB/Simulink"** by Rik De Doncker et al.
+   - ISBN: 978-1118485576
+   - **Best for:** Modern control techniques with simulation
+   - **Key chapters:** 8 (Field-Oriented Control), 12 (Sensorless Control)
+   - **Level:** Graduate/Professional
+   - **Why read:** State-of-the-art methods, extensive Simulink examples
+
+6. **"Vector Control and Dynamics of AC Drives"** by D.W. Novotny and T.A. Lipo
+   - ISBN: 978-0198564126
+   - **Best for:** Fundamental theory of reference frames and transformations
+   - **Key chapters:** 4 (Reference Frame Theory), 7-9 (AC Machine Control)
+   - **Level:** Graduate/Research
+   - **Why read:** Authoritative source on coordinate transformations
+
+### 8.2 Application Notes and Technical Documents
+
+#### Texas Instruments (TI)
+
+**Essential:**
+1. **SPRA588** - "Field Orientated Control of 3-Phase AC-Motors" (Comprehensive FOC guide)
+2. **SPRABQ2** - "InstaSPIN-FOC and InstaSPIN-MOTION User's Guide"
+3. **SPRAAA3** - "Clarke & Park Transforms on the TMS320C2xx"
+4. **SPRAAB7** - "Sensorless Field Oriented Control of 3-Phase Permanent Magnet Synchronous Motors"
+
+**Advanced:**
+5. **SPRA588** - "Digital Motor Control Software Library"
+6. **SPRU485** - "C2000 Motor Control Primer"
+
+**Download:** www.ti.com/motor-control (free with registration)
+
+#### STMicroelectronics (ST)
+
+**Essential:**
+1. **AN1078** - "FOC Motor Control Algorithms for STM8 and STM32"
+2. **AN4776** - "General-purpose timer cookbook for STM32 microcontrollers"
+3. **AN4277** - "Using STM32 device PWM shut-down as a safety feature for motor control"
+4. **AN5051** - "Sensorless PMSM Field Oriented Control based on BEMF Observers"
+
+**Tools and SDKs:**
+5. **UM1052** - "STM32 PMSM FOC SDK v5.4 - User Manual"
+6. **AN5397** - "Introduction to STM32 Motor Control ecosystem"
+
+**Download:** www.st.com/motor-control (free with registration)
+
+#### Microchip
+
+**Essential:**
+1. **AN1078** - "Sensorless Field Oriented Control of PMSM Motors"
+2. **AN1299** - "Single-Shunt Three-Phase Current Reconstruction Algorithm"
+3. **AN908** - "Using the dsPIC30F for Sensorless BLDC Control"
+4. **AN2520** - "Field Weakening Techniques for PMSMs and BLDCs"
+
+**Download:** www.microchip.com/design-centers/motor-control-and-drive
+
+#### Infineon
+
+**Essential:**
+1. **AP32370** - "Field Oriented Control of Permanent Magnet Synchronous Motors"
+2. **AP32371** - "Sensorless FOC for PMSM using Sliding Mode Observer"
+3. **AP32374** - "XMC4000 Family - Motor Control Application Kit Hardware Reference"
+
+**Download:** www.infineon.com/cms/en/applications/industrial/drives/
+
+#### NXP / Freescale
+
+**Essential:**
+1. **DRM148** - "3-Phase PMSM Control Software Suite User Manual"
+2. **AN4642** - "Flux Weakening Operation of PMSM Motors"
+
+### 8.3 Academic Papers (Foundational and Advanced)
+
+#### Classic Papers (Must-Read)
+
+1. **F. Blaschke, "The Principle of Field Orientation as Applied to the New Transvector Closed-Loop Control System for Rotating Field Machines"**
+   - Siemens Review, 1972
+   - The original FOC paper - historical importance
+
+2. **T.M. Jahns, "Motion Control with Permanent-Magnet AC Machines"**
+   - Proceedings of the IEEE, vol. 82, no. 8, 1994
+   - Excellent overview of PMSM control strategies
+
+3. **J. Holtz, "Sensorless Control of Induction Motor Drives"**
+   - Proceedings of the IEEE, vol. 90, no. 8, 2002
+   - Comprehensive review of sensorless methods
+
+4. **S. Morimoto et al., "Wide-Speed Operation of Interior Permanent Magnet Synchronous Motors with High-Performance Current Regulator"**
+   - IEEE Trans. Industry Applications, vol. 30, no. 4, 1994
+   - MTPA and field weakening strategies for IPMSMs
+
+#### Recent Research (Advanced Topics)
+
+5. **Model Predictive Control for PMSMs:**
+   - P. Karamanakos et al., "Model Predictive Control of Power Electronic Converters: An Overview"
+   - IEEE Trans. Power Electronics, 2021
+
+6. **Machine Learning for Motor Control:**
+   - S. Bolognani et al., "Design and Implementation of Model Predictive Control for Electrical Motor Drives"
+   - IEEE Trans. Industrial Electronics, 2009
+
+7. **Sensorless Control:**
+   - M. Schroedl, "Sensorless Control of AC Machines at Low Speed and Standstill"
+   - IEE Conf. Power Electronics and Variable Speed Drives, 1996
+
+**Access:** IEEE Xplore, Google Scholar, ResearchGate
+
+### 8.4 Online Courses and Video Lectures
+
+#### Video Course Series
+
+1. **MATLAB Tech Talks:**
+   - "Understanding Field-Oriented Control" (10-part series)
+   - URL: www.mathworks.com/videos/series/understanding-field-oriented-control.html
+   - **Free, excellent animations and explanations**
+
+2. **Texas Instruments Training:**
+   - "Motor Control Training Series" (C2000)
+   - "Real-Time Control with TI C2000 MCUs"
+   - URL: training.ti.com (search "motor control")
+
+3. **YouTube Channels:**
+   - **"Zach Star"** - "Vector Control Explained" (great visuals)
+   - **"Phil's Lab"** - Embedded motor control tutorials
+   - **"ControllersTech"** - STM32 motor control examples
+   - **"Curio Res"** - FOC fundamentals with animations
+
+#### University Courses (MOOCs)
+
+4. **Coursera:**
+   - "Power Electronics Specialization" - University of Colorado Boulder
+   - "Introduction to Power Electronics" - University of Colorado Boulder
+   - URL: www.coursera.org
+
+5. **edX:**
+   - "Electric Cars: Technology" - Delft University of Technology
+   - "Power Electronics" - ETH Zurich
+   - URL: www.edx.org
+
+6. **MIT OpenCourseWare:**
+   - 6.685 "Electric Machines" - Prof. James Kirtley
+   - URL: ocw.mit.edu
+
+### 8.5 Software Tools and Simulation
+
+#### Commercial Tools
+
+1. **MATLAB/Simulink:**
+   - Motor Control Blockset
+   - Simscape Electrical (formerly SimPowerSystems)
+   - Embedded Coder for code generation
+   - **Best for:** Algorithm development and simulation
+   - URL: www.mathworks.com/products/motor-control.html
+
+2. **PLECS (Piecewise Linear Electrical Circuit Simulation):**
+   - Fast power electronics and motor drive simulation
+   - Excellent for FOC visualization
+   - URL: www.plexim.com
+
+3. **PSIM:**
+   - Power electronics and motor control simulation
+   - Motor Control Module available
+   - URL: powersimtech.com
+
+#### Free/Open-Source Tools
+
+4. **Python Libraries:**
+   - **NumPy/SciPy** - Numerical computation
+   - **Control** - Control systems library
+   - **matplotlib** - Plotting and visualization
+   - Example: FOC simulation in Python (see GitHub repositories)
+
+5. **GNU Octave:**
+   - Free MATLAB alternative
+   - Compatible with most MATLAB motor control scripts
+   - URL: www.gnu.org/software/octave
+
+6. **LTspice:**
+   - Free circuit simulation (analog)
+   - Good for inverter and gate driver design
+   - URL: www.analog.com/ltspice
+
+### 8.6 Open-Source Projects and Firmware
+
+#### Production-Quality FOC Implementations
+
+1. **VESC Project (Benjamin Vedder)**
+   - Repository: github.com/vedderb/bldc
+   - **Description:** High-performance BLDC/PMSM controller with FOC
+   - **Features:** Sensorless, field weakening, CAN bus, very mature
+   - **Hardware:** STM32F4, custom PCB designs available
+   - **License:** GPL
+   - **Why study:** Industry-grade code, well-tested, extensive features
+
+2. **ODrive**
+   - Repository: github.com/madcowswe/ODrive
+   - **Description:** High-performance motor controller for robotics
+   - **Features:** Dual motor, encoder feedback, USB/UART control
+   - **Hardware:** STM32F405, commercial product available
+   - **License:** MIT
+   - **Why study:** Clean architecture, good documentation
+
+3. **SimpleFOC**
+   - Repository: github.com/simplefoc/Arduino-FOC
+   - **Description:** Easy-to-use FOC library for Arduino and STM32
+   - **Features:** Multiple sensor types, user-friendly API, educational focus
+   - **Hardware:** Arduino, ESP32, STM32
+   - **License:** MIT
+   - **Why study:** Beginner-friendly, excellent tutorials, active community
+   - **Website:** simplefoc.com
+
+#### Educational Projects
+
+4. **STM32 Motor Control SDK**
+   - URL: www.st.com/en/embedded-software/x-cube-mcsdk.html
+   - **Description:** Official ST motor control software
+   - **Features:** FOC, sensorless, profiling tool, code generation
+   - **Free:** Yes (requires ST account)
+
+5. **Microchip/Atmel Application Code**
+   - URL: www.microchip.com/motor-control-code-examples
+   - **Description:** FOC examples for dsPIC and SAM MCUs
+   - **Free:** Yes
+
+6. **TI C2000 MotorControl SDK**
+   - URL: www.ti.com/tool/C2000WARE-MOTORCONTROL-SDK
+   - **Description:** Complete FOC solutions for C2000 MCUs
+   - **Free:** Yes
+
+### 8.7 Development Boards and Kits
+
+#### Complete Development Kits
+
+1. **Texas Instruments:**
+   - **LAUNCHXL-F28379D** - C2000 Delfino LaunchPad ($99)
+   - **BOOSTXL-DRV8305EVM** - 3-phase motor driver BoosterPack ($99)
+   - Bundle provides complete FOC development platform
+
+2. **STMicroelectronics:**
+   - **NUCLEO-G474RE** - Cortex-M4 board with CORDIC ($15)
+   - **X-NUCLEO-IHM08M1** - 3-phase motor driver expansion ($50)
+   - **P-NUCLEO-IHM001** - Complete PMSM FOC kit with motor ($99)
+
+3. **Infineon:**
+   - **XMC4500 Relax Kit** - Motor control MCU ($40)
+   - **Motor Control Shield** - 3-phase driver add-on ($50)
+
+4. **Microchip:**
+   - **dsPIC33CK Low Voltage Motor Control Board** ($150)
+   - Includes PMSM motor and all sensors
+
+#### Budget-Friendly Options
+
+5. **SimpleFOC Shield V2:**
+   - URL: simplefoc.com/shop
+   - **Price:** ~$30
+   - Works with Arduino/STM32, BLDC/PMSM capable
+   - Open-source hardware
+
+6. **ODrive Robotics:**
+   - URL: odriverobotics.com
+   - **ODrive v3.6** (~$150 for dual-motor)
+   - Production-ready controller
+
+### 8.8 Standards and Specifications
+
+#### International Standards
+
+1. **IEC 61800-7-201:2015**
+   - "Adjustable speed electrical power drive systems - Part 7-201: Generic interface and use of profiles for power drive systems - Profile type 1 specification"
+   - Covers motor control interfaces and communication
+
+2. **IEC 60034 Series**
+   - Rotating electrical machines standards
+   - Part 30: Efficiency classes of variable speed drives
+
+3. **IEEE Std 1566-2015**
+   - "IEEE Standard for Performance of Adjustable Speed AC Drives Rated 375 kW and Larger"
+
+4. **UL 508C**
+   - Power conversion equipment safety standard
+
+#### Automotive Standards (for EV applications)
+
+5. **ISO 26262**
+   - Functional safety for automotive systems
+   - Relevant for safety-critical motor control
+
+6. **SAE J1850**
+   - Vehicle network communications protocols
+
+### 8.9 Forums, Communities, and Websites
+
+#### Active Online Communities
+
+1. **SimpleFOC Community Forum**
+   - URL: community.simplefoc.com
+   - **Best for:** Beginners asking practical FOC questions
+   - Very helpful, active, educational focus
+
+2. **Endless Sphere (Electric Vehicle Forums)**
+   - URL: endless-sphere.com/forums
+   - **Best for:** DIY EV and motor controller discussions
+   - Large VESC community
+
+3. **Electronics Stack Exchange**
+   - URL: electronics.stackexchange.com
+   - Search: "FOC", "PMSM", "motor control"
+   - High-quality technical Q&A
+
+4. **Reddit:**
+   - r/Motors - Motor control discussions
+   - r/ECE - Electrical/computer engineering
+   - r/embedded - Embedded systems
+
+#### Manufacturer Forums
+
+5. **TI E2E Community**
+   - URL: e2e.ti.com/support/motor-drivers
+   - Official TI support forum
+
+6. **ST Community**
+   - URL: community.st.com
+   - Motor control subforum
+
+7. **Microchip Forums**
+   - URL: www.microchip.com/forums
+
+#### Blogs and Websites
+
+8. **All About Circuits**
+   - URL: www.allaboutcircuits.com
+   - Excellent motor control tutorials
+
+9. **Power Electronics News**
+   - URL: powerelectronicsnews.com
+   - Industry news and technical articles
+
+10. **Motor Control & Power Electronics Blog (MATLAB)**
+    - URL: blogs.mathworks.com/motor-control
+
+### 8.10 Recommended Learning Path for Fresh Graduates
+
+#### Phase 1: Foundations (2-4 weeks)
+
+1. **Read:** Bose "Power Electronics and Motor Drives" - Chapters 1-3, 6
+2. **Watch:** MATLAB "Understanding FOC" video series (all 10 parts)
+3. **Review:** This handbook Sections 1-3 (Motors, Reference Frames)
+4. **Practice:** Hand calculations of Clarke/Park transforms
+
+#### Phase 2: FOC Theory (2-3 weeks)
+
+1. **Read:** This handbook Section 4-6 (Sensors, Transformations, FOC)
+2. **Study:** TI application note SPRA588 "Field Orientated Control"
+3. **Simulate:** MATLAB/Simulink basic FOC example
+4. **Practice:** Implement coordinate transforms in Python/MATLAB
+
+#### Phase 3: Implementation (3-4 weeks)
+
+1. **Read:** This handbook Section 7 (System Architecture)
+2. **Study:** SimpleFOC library source code and examples
+3. **Hardware:** Purchase development kit (SimpleFOC Shield + Arduino or STM32 Nucleo + motor driver shield)
+4. **Practice:** Run existing FOC firmware, monitor telemetry, tune PI gains
+
+#### Phase 4: Hands-On Project (4-6 weeks)
+
+1. **Build:** Complete FOC system on development board
+2. **Implement:** Custom FOC algorithm from scratch (or heavily modify existing)
+3. **Test:** Speed control, torque control, load response
+4. **Document:** Create project report with scope captures, plots
+
+#### Phase 5: Advanced Topics (ongoing)
+
+1. **Study:** Sensorless control methods (AN5051 from ST)
+2. **Study:** Field weakening for high-speed operation
+3. **Explore:** Model Predictive Control (MPC) for motor drives
+4. **Read:** Recent IEEE papers on advanced control strategies
+
+**Total time estimate:** 3-6 months to become proficient in FOC
+
+### 8.11 Debugging and Troubleshooting Resources
+
+#### Common Issues and Solutions
+
+**Resource:** Each manufacturer has application notes on debugging:
+- **TI:** "Debugging Motor Control Applications" (SPRABM5)
+- **ST:** "Troubleshooting Motor Control Applications" (AN4220)
+
+#### Essential Debug Tools
+
+1. **Oscilloscope:** 4-channel, 100 MHz minimum (to observe 3-phase + trigger)
+2. **Current Probes:** AC/DC current measurement
+3. **Logic Analyzer:** For digital signal debugging (Hall sensors, encoders, SPI/I2C)
+4. **Debugger:** J-Link, ST-Link, or similar JTAG/SWD debugger
+5. **Power Supply:** Programmable, current-limited (for motor testing)
+
+### 8.12 Safety and Best Practices
+
+#### Essential Safety Documents
+
+1. **"Electrical Safety for Motor Control"** - Application notes from motor driver IC manufacturers
+2. **"PCB Layout for Motor Control"** - High-power PCB design guidelines
+3. **"EMI/EMC Considerations for Motor Drives"** - Noise reduction techniques
+
+#### Safety Guidelines
+
+- Always use current-limited power supplies during development
+- Implement overcurrent protection in hardware (comparators + PWM break)
+- Never bypass safety features during testing
+- Use isolated probes when measuring high voltage
+- Follow proper ESD handling procedures
+
+---
+
+*End of Section 8 - References and Resources*
+
+---
+
+## Conclusion
+
+This handbook has provided you with a comprehensive foundation in PMSM motor control with Field Oriented Control, specifically using Hall effect sensors for position feedback. You've learned:
+
+- The fundamentals of PMSM motors and their operation
+- The concept and importance of reference frames in motor control
+- Position sensing techniques with Hall effect sensors
+- Mathematical transformations that make FOC possible
+- Complete FOC theory from first principles to implementation
+- Practical system architecture for embedded implementation
+
+**The journey doesn't end here.** Motor control is a rich field combining power electronics, control theory, embedded systems, and mechanical engineering. Continue learning through:
+
+- **Hands-on projects:** Build and test your own motor control systems
+- **Community engagement:** Join forums, ask questions, share your work
+- **Continuous study:** Read papers, watch videos, take courses
+- **Experimentation:** Try different motors, control strategies, applications
+
+Remember: Every expert was once a beginner. The FOC algorithm may seem complex at first, but with practice and hands-on experience, it will become second nature.
+
+**Good luck with your motor control journey!**
+
+---
+
+*End of Detailed Theory Handbook - PMSM FOC with Hall Sensors*
+
+**Document Information:**
+- **Title:** Detailed Theory Handbook: PMSM Field Oriented Control with Hall Effect Sensors
+- **Target Audience:** Fresh graduates and engineers new to motor control
+- **Date:** 2025
+- **Total Sections:** 8 (Introduction, PMSM Theory, Reference Frames, Position Sensors, Mathematical Transformations, FOC Theory, System Architecture, References)
+- **Total Pages:** ~150+ (in PDF format)
+
+**Repository:** github.com/[user]/pmsm_foc_model
+**License:** Educational use
+
