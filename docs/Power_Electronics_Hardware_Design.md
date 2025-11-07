@@ -476,3 +476,374 @@ Battery ←── Inverter ←── Motor
 
 ---
 
+## 3. Power Semiconductor Selection
+
+### 3.1 MOSFET Fundamentals and Key Parameters
+
+**MOSFET Structure and Operation:**
+
+A power MOSFET (Metal-Oxide-Semiconductor Field-Effect Transistor) is a voltage-controlled switch used in motor drive inverters. When voltage is applied to the gate (VGS > Vth), a conductive channel forms, allowing current to flow from drain to source.
+
+**Critical MOSFET Parameters:**
+
+1. **Voltage Rating (VDS_max)**:
+   - Maximum drain-source voltage the device can block
+   - Common ratings: 100V, 150V, 650V, 750V, 1200V
+   - **Selection rule**: VDS_rated ≥ 1.5 × VDC_max (50% margin for transients)
+   - Example: 400V DC bus → Use 600V-750V rated MOSFETs
+
+2. **Current Rating**:
+   - **Continuous Drain Current (ID)**: At 25°C case temperature
+   - **Pulsed Drain Current (IDM)**: Short duration (<1ms)
+   - **RMS Current**: Actual current handling depends on thermal design
+   - **Selection rule**: ID_rated ≥ 1.5 × I_phase_RMS at operating temperature
+
+3. **On-Resistance (RDS_on)**:
+   - Resistance when MOSFET is fully ON
+   - **Conduction Loss**: P_cond = I²_RMS × RDS_on
+   - Temperature dependent: RDS_on increases ~50-80% from 25°C to 150°C
+   - **Lower RDS_on = lower conduction loss but higher cost and gate charge**
+
+4. **Gate Charge (Qg, Qgs, Qgd)**:
+   - Charge required to turn ON the MOSFET
+   - **Total Gate Charge (Qg)**: Total charge from 0V to VGS_target
+   - **Gate-Source Charge (Qgs)**: Charge to reach Miller plateau
+   - **Gate-Drain Charge (Qgd)**: Miller charge (causes switching delay)
+   - **Switching Loss**: P_sw ∝ Qg × VGS × f_sw
+   - **Trade-off**: Low Qg = fast switching but may have higher RDS_on
+
+5. **Switching Times**:
+   - **Turn-on delay (td_on)**: Gate voltage rise to threshold
+   - **Rise time (tr)**: Current rises from 10% to 90%
+   - **Turn-off delay (td_off)**: Gate voltage fall from VGS to Vth
+   - **Fall time (tf)**: Current falls from 90% to 10%
+   - Total switching time ≈ 50-200 ns for Si, 20-50 ns for SiC
+
+6. **Body Diode Characteristics**:
+   - Intrinsic diode (parasitic diode) in MOSFET structure
+   - **Forward Voltage (VF)**: 0.7-1.2V for Si, 2-4V for SiC
+   - **Reverse Recovery Time (trr)**: 50-200 ns for Si, ~0 for SiC
+   - **Reverse Recovery Charge (Qrr)**: Energy loss during diode turn-off
+   - Poor body diode in SiC → often use external fast diodes in parallel
+
+7. **Thermal Resistance (Rth_JC)**:
+   - Junction-to-case thermal resistance
+   - Typical: 0.3-1.0 °C/W for TO-247 packages
+   - Lower Rth → better heat dissipation
+
+**Power Loss Calculation:**
+
+```
+Total MOSFET loss = Conduction loss + Switching loss
+
+P_cond = I²_RMS × RDS_on(Tj)
+
+P_sw = (E_on + E_off) × f_sw
+     ≈ (1/6) × VDS × ID × (tr + tf) × f_sw
+
+Where:
+  tr, tf = rise and fall times
+  f_sw = switching frequency
+```
+
+**Example Calculation:**
+```
+50 kW motor, 400V DC bus, 150A phase current RMS
+Using 650V, 15mΩ Si MOSFET at 150°C junction temp (RDS_on ≈ 23mΩ)
+
+Per MOSFET:
+  P_cond = (150)² × 0.023 = 517 W
+  P_sw (at 10 kHz) ≈ 200 W
+  Total per MOSFET = 717 W
+
+Six MOSFETs total: 6 × 717 = 4.3 kW loss
+Efficiency = 50 / (50 + 4.3) = 92%
+
+Using 650V SiC MOSFET with 10mΩ, faster switching:
+  P_cond = (150)² × 0.010 = 225 W
+  P_sw (at 20 kHz) ≈ 80 W
+  Total per MOSFET = 305 W
+  Total loss = 1.83 kW
+  Efficiency = 50 / (50 + 1.83) = 96.5%
+
+Efficiency gain: 4.5 percentage points!
+```
+
+### 3.2 Silicon MOSFETs vs SiC vs GaN
+
+**Technology Comparison:**
+
+| Parameter | Silicon (Si) | Silicon Carbide (SiC) | Gallium Nitride (GaN) |
+|-----------|--------------|------------------------|------------------------|
+| **Bandgap** | 1.1 eV | 3.2 eV | 3.4 eV |
+| **Max Junction Temp** | 150-175°C | 175-200°C | 150-200°C |
+| **Voltage Range** | 30-1700V | 650-1700V | 100-650V |
+| **RDS_on (relative)** | Baseline | 30-40% lower | 40-60% lower |
+| **Switching Speed** | Moderate (50-200 ns) | Fast (20-50 ns) | Very Fast (5-20 ns) |
+| **Gate Charge** | Baseline | 30-50% lower | 50-70% lower |
+| **Body Diode VF** | 0.7-1.2V | 2.5-4.5V | 1.5-2.5V |
+| **Reverse Recovery** | Significant (Qrr) | Negligible | Negligible |
+| **Cost (relative)** | 1× (baseline) | 2-4× | 3-5× |
+| **Maturity** | Very mature | Mature | Emerging |
+| **Availability** | Excellent | Good | Moderate |
+
+**Silicon (Si) MOSFETs:**
+
+**Advantages:**
+- Lowest cost and widely available
+- Mature technology with extensive application notes
+- Good for low to medium voltage (<650V)
+- Well-understood failure modes and reliability
+
+**Disadvantages:**
+- Higher RDS_on at elevated temperatures
+- Slower switching (higher switching losses)
+- Poor body diode reverse recovery
+- Limited to ~1000V practical voltage
+
+**Best for:**
+- Cost-sensitive applications (e-bikes, scooters, power tools)
+- Low voltage systems (24-48V)
+- Low to medium power (<20 kW)
+- PWM frequencies <15 kHz
+
+**Silicon Carbide (SiC) MOSFETs:**
+
+**Advantages:**
+- 60-70% lower RDS_on than equivalent Si
+- 3-5× faster switching (lower switching losses)
+- Negligible reverse recovery (fast body diode)
+- Higher temperature operation (200°C junction)
+- Enables higher switching frequencies (20-50 kHz)
+- Better efficiency (2-5 percentage points gain)
+
+**Disadvantages:**
+- 2-4× higher cost than Si
+- Higher gate oxide stress (more sensitive to overvoltage)
+- Poor body diode forward drop (3-4V)
+- Gate driver design requires care (negative VGS for noise immunity)
+
+**Best for:**
+- High-performance EVs (>50 kW)
+- High-efficiency applications where cost is justified
+- High DC bus voltage (>400V)
+- High switching frequency designs (>15 kHz)
+- Thermal-constrained applications (high ambient temp)
+
+**Typical Applications:**
+- Tesla Model 3 (SiC inverter, ~98% efficiency)
+- Premium EVs (Porsche Taycan, Audi e-tron GT)
+- Fast chargers (>100 kW)
+
+**Gallium Nitride (GaN) FETs:**
+
+**Advantages:**
+- Lowest RDS_on and gate charge
+- Fastest switching speed (5-20 ns)
+- Smallest package size (high power density)
+- Zero reverse recovery
+- Excellent for very high frequency (50-500 kHz)
+
+**Disadvantages:**
+- Most expensive (3-5× Si cost)
+- Limited voltage range (<650V practical)
+- Normally-ON topology requires special gate drivers
+- Less mature technology (fewer long-term reliability data)
+- Sensitive to overvoltage and overcurrent
+
+**Best for:**
+- Ultra-high switching frequency (>50 kHz)
+- Compact, high-power-density designs
+- Moderate voltage systems (200-400V)
+- Low to medium power (<50 kW currently)
+
+**Emerging Applications:**
+- High-performance drones
+- Compact EV chargers
+- Server power supplies
+- Future: High-RPM motors requiring low inductance
+
+### 3.3 Device Selection Criteria
+
+**Decision Tree for Power Semiconductor Selection:**
+
+```
+START: Define application requirements
+  │
+  ├─ DC Bus Voltage?
+  │   ├─ <100V → Si MOSFET (low voltage)
+  │   ├─ 100-400V → Si, SiC, or GaN
+  │   ├─ 400-800V → SiC or high-voltage Si
+  │   └─ >800V → SiC or IGBT
+  │
+  ├─ Power Level?
+  │   ├─ <5 kW → Si MOSFET (cost effective)
+  │   ├─ 5-50 kW → Si or SiC (depends on efficiency target)
+  │   ├─ 50-200 kW → SiC preferred
+  │   └─ >200 kW → SiC or IGBT modules
+  │
+  ├─ Efficiency Target?
+  │   ├─ >96% → SiC required
+  │   ├─ 93-96% → SiC or optimized Si
+  │   └─ <93% → Si acceptable
+  │
+  ├─ Switching Frequency?
+  │   ├─ <10 kHz → Si adequate
+  │   ├─ 10-20 kHz → Si or SiC
+  │   ├─ 20-50 kHz → SiC preferred
+  │   └─ >50 kHz → GaN or SiC
+  │
+  ├─ Cost Sensitivity?
+  │   ├─ High (consumer) → Si
+  │   ├─ Medium (automotive) → SiC
+  │   └─ Low (aerospace) → SiC or GaN
+  │
+  └─ Thermal Constraints?
+      ├─ Unconstrained → Si or SiC
+      ├─ Limited cooling → SiC (lower losses)
+      └─ High ambient temp → SiC (200°C capable)
+```
+
+**Practical Selection Guidelines:**
+
+| Application | Voltage | Power | Recommended Device |
+|-------------|---------|-------|---------------------|
+| E-bike/Scooter | 48V | 1-5 kW | 100V Si MOSFET |
+| Golf cart, AGV | 48-72V | 5-10 kW | 150V Si MOSFET |
+| Small EV (Tata Nano EV) | 72-144V | 10-30 kW | 200-300V Si MOSFET |
+| Mid-size EV (Nissan Leaf) | 350-400V | 80 kW | 650V SiC MOSFET |
+| Premium EV (Tesla Model 3) | 350-400V | 150 kW | 650V SiC MOSFET |
+| Heavy truck/bus | 600-800V | 200+ kW | 1200V SiC modules |
+| Industrial servo | 540-680V | 5-50 kW | 1200V SiC or Si |
+| High-speed spindle | 400V | 20-100 kW | 650V SiC (high freq) |
+
+**Key Selection Criteria Summary:**
+
+1. **Start with voltage rating**: This immediately narrows options
+2. **Consider power losses**: Calculate conduction and switching losses
+3. **Evaluate thermal design**: Can you cool it adequately?
+4. **Calculate efficiency**: Does SiC cost justify efficiency gain?
+5. **Check availability and supply chain**: Can you source it reliably?
+6. **Review gate driver requirements**: Do you have suitable drivers?
+
+### 3.4 Parallel Operation Considerations
+
+**Why Parallel MOSFETs?**
+
+- Increase current capability beyond single device rating
+- Reduce effective RDS_on (N devices in parallel → RDS_on / N)
+- Distribute power dissipation across multiple devices
+- Improve redundancy (one device failure doesn't stop entire inverter)
+
+**Challenges in Parallel Operation:**
+
+1. **Current Imbalance**:
+   - MOSFETs never have exactly the same RDS_on (±10% tolerance)
+   - Device with lower RDS_on carries more current
+   - Temperature mismatch exacerbates imbalance
+   - Can lead to thermal runaway in hottest device
+
+2. **Layout-Induced Imbalance**:
+   - Different trace lengths and impedances
+   - Different gate loop inductances
+   - Different thermal coupling
+
+**Best Practices for Paralleling:**
+
+```
+1. Match Devices:
+   - Use devices from same production batch
+   - Bin devices by RDS_on (within ±5% if possible)
+   - Use matched gate resistors for each device
+
+2. Symmetrical Layout:
+   - Equal trace lengths from DC+ to all drains
+   - Equal trace lengths from all sources to DC-
+   - Equal gate drive trace lengths
+   - Kelvin sense connections for accurate gate drive
+
+3. Thermal Management:
+   - Mount all parallel devices on same heatsink
+   - Equal thermal coupling to heatsink (same TIM thickness)
+   - Avoid hotspots from uneven airflow
+
+4. Gate Drive:
+   - Individual gate resistor for each MOSFET
+   - Common gate voltage distribution with low impedance
+   - Typical: Rg = 1-5Ω per device
+```
+
+**Current Sharing Analysis:**
+
+```
+Two MOSFETs in parallel:
+  Device 1: RDS_on = 10 mΩ
+  Device 2: RDS_on = 11 mΩ  (10% higher)
+
+Total current: 200A
+
+Current distribution:
+  I1 = I_total × (RDS2 / (RDS1 + RDS2))
+     = 200 × (11 / 21) = 105A  (52.5%)
+
+  I2 = I_total × (RDS1 / (RDS1 + RDS2))
+     = 200 × (10 / 21) = 95A   (47.5%)
+
+Power dissipation:
+  P1 = I1² × RDS1 = 105² × 0.010 = 110W
+  P2 = I2² × RDS2 = 95² × 0.011 = 99W
+
+Only 10% RDS_on mismatch → 11% power imbalance
+```
+
+**When NOT to Parallel:**
+
+- If single device with adequate margin is available
+- Cost of two smaller devices > one larger device
+- PCB space is constrained
+- Cannot achieve symmetrical layout
+
+**Better Alternative: Use Larger Single Device or Module**
+- Power modules (e.g., Infineon HybridPACK) have internal paralleling optimized
+- Single large die better than multiple small dies
+- Simplifies gate drive and layout
+
+---
+
+### References for Section 3:
+
+**Books:**
+1. *"Power MOSFET Basics"* by Vishay Siliconix Application Note
+2. *"Fundamentals of Power Semiconductor Devices"* by B. Jayant Baliga - Comprehensive theory
+3. *"SiC Power Devices and Applications"* - Wide Bandgap Semiconductors (IEEE Press)
+
+**Application Notes:**
+1. **Infineon**: "MOSFET Power Losses Calculation Using the Datasheet Parameters" (AN2019-16)
+2. **ON Semiconductor**: "Paralleling Power MOSFETs" (AND9094/D)
+3. **Texas Instruments**: "Understanding the Basics of SiC MOSFETs" (SNOAA36)
+4. **Wolfspeed (Cree)**: "SiC MOSFET Gate Driver Design Considerations" (Application Note)
+5. **STMicroelectronics**: "Silicon vs Silicon Carbide: A Comparison" (AN5089)
+6. **ROHM Semiconductor**: "SiC Power Devices and Modules - Application Manual"
+
+**Articles and Papers:**
+1. "Comparison of Si IGBT and SiC MOSFET-Based Inverters for Electric Vehicle Traction" - IEEE Transactions on Transportation Electrification
+2. "GaN Power Devices for Automotive Applications" - SAE International
+3. "Body Diode Reverse Recovery and its Effects in High-Performance Motor Drives" - PCIM Europe
+
+**Videos:**
+1. **Wolfspeed**: "SiC vs Si: Which Should You Choose?" (YouTube)
+2. **Infineon**: "Power MOSFET Basics and Selection" (YouTube training series)
+3. **EEVblog**: "Power MOSFET Tutorial" (YouTube)
+4. **Texas Instruments**: "GaN FET Technology Overview" (TI Training)
+
+**Datasheets (Comparative Study):**
+1. **Si**: Infineon IPW65R019C7 (650V, 114A, 19mΩ Si CoolMOS)
+2. **SiC**: Wolfspeed C3M0021120K (1200V, 108A, 21mΩ SiC MOSFET)
+3. **GaN**: GaN Systems GS66516T (650V, 30A, 50mΩ GaN FET)
+
+**Industry Whitepapers:**
+1. **Tesla**: "Model 3 Drive Unit: Full SiC Inverter" (teardown analysis by Munro & Associates)
+2. **Yole Développement**: "SiC and GaN Power Semiconductor Market Report 2024"
+
+---
+
