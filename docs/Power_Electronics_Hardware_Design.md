@@ -730,59 +730,286 @@ START: Define application requirements
 
 **Why Parallel MOSFETs?**
 
-- Increase current capability beyond single device rating
-- Reduce effective RDS_on (N devices in parallel → RDS_on / N)
-- Distribute power dissipation across multiple devices
-- Improve redundancy (one device failure doesn't stop entire inverter)
+1. **Current Capability**: Increase beyond single device rating
+2. **Thermal Performance**: Distribute power dissipation across multiple devices
+3. **Reduced RDS_on**: N devices in parallel → RDS_on / N (lower conduction loss)
+4. **Junction Temperature**: Lower Tj for same total power (improved reliability)
+5. **Redundancy**: One device failure may not stop entire inverter (graceful degradation)
+6. **Cost Optimization**: Multiple smaller MOSFETs may be cheaper than single large device
+
+**Thermal Performance Benefits:**
+
+```
+Example: 500W dissipation per phase leg
+
+Single MOSFET:
+  P_loss = 500W
+  Rth_JC = 0.5°C/W
+  ΔT_junction = 500 × 0.5 = 250°C rise!
+  Tj = 25 + 250 = 275°C → FAILURE!
+
+Two MOSFETs in parallel (assuming perfect current sharing):
+  P_loss per device = 250W
+  Rth_JC = 0.5°C/W (same device)
+  ΔT_junction = 250 × 0.5 = 125°C rise
+  Tj = 25 + 125 = 150°C → Safe operation
+
+Three MOSFETs in parallel:
+  P_loss per device = 167W
+  ΔT_junction = 167 × 0.5 = 83.5°C rise
+  Tj = 25 + 83.5 = 108.5°C → Excellent thermal margin
+```
+
+**Thermal derating benefits:**
+- Lower junction temperature → longer MTBF (halving Tj doubles lifetime)
+- Reduced thermal stress on solder joints and PCB
+- Less demanding cooling requirements (smaller heatsink or lower airflow)
+- Better efficiency at elevated ambient temperatures
 
 **Challenges in Parallel Operation:**
 
-1. **Current Imbalance**:
-   - MOSFETs never have exactly the same RDS_on (±10% tolerance)
+1. **Static Current Imbalance**:
+   - MOSFETs never have exactly the same RDS_on (±10% tolerance typical)
    - Device with lower RDS_on carries more current
-   - Temperature mismatch exacerbates imbalance
+   - Variation increases with temperature coefficient mismatch
    - Can lead to thermal runaway in hottest device
 
-2. **Layout-Induced Imbalance**:
-   - Different trace lengths and impedances
-   - Different gate loop inductances
-   - Different thermal coupling
+2. **Dynamic Current Imbalance**:
+   - Different gate threshold voltages (Vth variation ±20%)
+   - Unequal gate drive loop inductances cause timing skew
+   - One device turns on/off faster → carries transient surge current
+   - High-frequency current imbalance even if DC sharing is good
 
-**Best Practices for Paralleling:**
+3. **Layout-Induced Imbalance**:
+   - Different trace lengths → different resistances and inductances
+   - Unequal source inductance causes negative feedback imbalance
+   - Different gate loop impedances → different switching speeds
+   - Unequal thermal coupling to heatsink
+
+4. **Thermal Coupling Effects**:
+   - Positive temperature coefficient of RDS_on helps balance (hotter device increases R, takes less current)
+   - BUT during switching, negative temperature coefficient of Vth can cause runaway
+   - Adjacent devices on heatsink thermally couple (one hot device heats its neighbor)
+
+**Gate Driver Design for Parallel MOSFETs:**
+
+**Option 1: Individual Gate Resistors (Recommended)**
 
 ```
-1. Match Devices:
-   - Use devices from same production batch
-   - Bin devices by RDS_on (within ±5% if possible)
-   - Use matched gate resistors for each device
+           ┌── Rg1 ──┬─── MOSFET 1 Gate
+           │         │
+ Gate ─────┼── Rg2 ──┼─── MOSFET 2 Gate
+ Driver    │         │
+ Output    └── Rg3 ──┴─── MOSFET 3 Gate
 
-2. Symmetrical Layout:
-   - Equal trace lengths from DC+ to all drains
-   - Equal trace lengths from all sources to DC-
-   - Equal gate drive trace lengths
-   - Kelvin sense connections for accurate gate drive
-
-3. Thermal Management:
-   - Mount all parallel devices on same heatsink
-   - Equal thermal coupling to heatsink (same TIM thickness)
-   - Avoid hotspots from uneven airflow
-
-4. Gate Drive:
-   - Individual gate resistor for each MOSFET
-   - Common gate voltage distribution with low impedance
-   - Typical: Rg = 1-5Ω per device
+Where: Rg1 = Rg2 = Rg3 (matched values)
 ```
+
+**Advantages:**
+- Each MOSFET has matched gate impedance
+- Prevents oscillation between paralleled gates
+- Allows fine-tuning of individual switching speed
+- Isolates gate-drain capacitance coupling
+
+**Design Guidelines:**
+- Use 1-5Ω per MOSFET for high power, 5-10Ω for medium power
+- Tolerance: ±1% matched resistors recommended
+- Low inductance resistors (surface mount, short leads)
+
+**Option 2: Common Gate Drive with Star Topology**
+
+```
+                   Rg_common
+ Gate Driver ────────RRR──────┬───── MOSFET 1 Gate
+                               │
+                               ├───── MOSFET 2 Gate
+                               │
+                               └───── MOSFET 3 Gate
+
+Star point at physical center of parallel MOSFETs
+```
+
+**Less recommended** - can cause gate oscillations between devices.
+
+**Option 3: Separate Isolated Drivers (Best Performance)**
+
+```
+ PWM Signal ──┬─→ Isolated Driver 1 ──→ Rg1 ──→ MOSFET 1
+              │
+              ├─→ Isolated Driver 2 ──→ Rg2 ──→ MOSFET 2
+              │
+              └─→ Isolated Driver 3 ──→ Rg3 ──→ MOSFET 3
+```
+
+**Advantages:**
+- Complete electrical isolation between parallel devices
+- Independent control of each MOSFET switching
+- Can implement active current balancing
+- Best for high-power applications (>50kW)
+
+**Cost:** High ($10-15 per driver × N devices)
+
+**PCB Layout Considerations for Parallel MOSFETs:**
+
+**1. Power Loop Symmetry:**
+
+```
+                    DC+ Bus
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+     ┌──┴──┐        ┌──┴──┐        ┌──┴──┐
+     │ Q1  │        │ Q2  │        │ Q3  │  (3 parallel high-side)
+     └──┬──┘        └──┬──┘        └──┬──┘
+        │              │              │
+        └──────────────┼──────────────┘
+                       │
+                   Phase Out
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+     ┌──┴──┐        ┌──┴──┐        ┌──┴──┐
+     │ Q4  │        │ Q5  │        │ Q6  │  (3 parallel low-side)
+     └──┬──┘        └──┬──┘        └──┬──┘
+        │              │              │
+        └──────────────┼──────────────┘
+                       │
+                    DC- Bus
+
+Critical: Equal trace lengths from DC+/DC- to each MOSFET
+```
+
+**Key Requirements:**
+- **Equal drain trace lengths**: ±5mm tolerance from DC+ to all drains
+- **Equal source trace lengths**: ±5mm tolerance from all sources to DC-/Phase
+- Minimize total loop inductance: <10 nH for high-performance designs
+- Wide, thick copper traces (4-6 oz copper) for power paths
+
+**2. Kelvin Source Connection:**
+
+```
+        Drain
+          │
+      ┌───┴───┐
+      │MOSFET │
+      │       │
+      └───┬───┘
+          │ Source (Power)
+          ├────────→ To DC- or Phase (heavy trace)
+          │
+          └─────────→ To Gate Driver Return (separate Kelvin trace)
+
+Purpose: Eliminates voltage drop in source inductance from affecting gate drive
+```
+
+**Implementation:**
+- Separate sense trace from source pin directly to gate driver ground
+- Keep Kelvin trace short (<25mm) and away from noisy switching nodes
+- Use 4-layer PCB minimum: Layer 1 (signals), Layer 2 (GND), Layer 3 (power), Layer 4 (signals)
+
+**3. Gate Drive Routing:**
+
+```
+For 3 parallel MOSFETs, use equal-length serpentine routing:
+
+Gate Driver ──┬── (serpentine, 50mm) ──→ Rg1 ──→ Q1
+              │
+              ├── (serpentine, 50mm) ──→ Rg2 ──→ Q2
+              │
+              └── (serpentine, 50mm) ──→ Rg3 ──→ Q3
+
+All gate traces exactly same length ±2mm
+```
+
+**Best Practices:**
+- Match gate drive trace lengths to ±2mm
+- Use 0.5-1.0mm trace width for gate drives (not critical for current, but impedance controlled)
+- Route gate traces away from drain nodes (high dv/dt) to prevent coupling
+- Ground plane under gate traces for shielding
+
+**4. Thermal Layout:**
+
+**Inline Configuration:**
+```
+   [Q1] [Q2] [Q3]    ← All MOSFETs in a row
+   ════════════════   ← Common heatsink
+```
+**Pros:** Simple routing, good for low current imbalance
+**Cons:** End devices run cooler than center (airflow gradient)
+
+**Triangular Configuration:**
+```
+      [Q2]
+     /    \
+   [Q1]  [Q3]
+   ══════════   ← Common heatsink
+```
+**Pros:** More symmetric thermal coupling
+**Cons:** More complex PCB routing
+
+**Spacing:**
+- Minimum 10mm between parallel MOSFETs for thermal isolation
+- Maximum 30mm to keep power loop inductance low
+- Use thermal vias under each MOSFET (50-100 vias, 0.3mm diameter)
+
+**Thermal Considerations for Parallel MOSFETs:**
+
+**1. Heatsink Mounting:**
+
+```
+Incorrect (causes thermal imbalance):
+  Q1    Q2    Q3
+  ↓     ↓     ↓
+ TIM   TIM   TIM   ← Different thickness!
+ ═══════════════   Heatsink
+
+Correct (equal thermal coupling):
+  Q1    Q2    Q3
+  ↓     ↓     ↓
+  ───────────────  ← Precision machined mounting surface
+ ═══════════════   Heatsink with flatness <0.05mm
+```
+
+**Best Practices:**
+- Use precision TIM application (screen printing or pre-applied pads)
+- Heatsink flatness specification: <0.05mm across MOSFET mounting area
+- Equal torque on all mounting screws (use torque wrench: 0.5-0.8 Nm typical)
+- TIM thickness tolerance: ±10 μm for critical applications
+
+**2. Thermal Monitoring:**
+
+```
+Implementation options:
+
+Option A: NTC thermistor on heatsink between MOSFETs
+Option B: Temperature sense diode in MOSFETs (if available)
+Option C: Infrared thermal camera during development
+
+Derating curve:
+  Tj < 100°C: 100% current rating
+  Tj = 125°C: 80% current rating  (start derating)
+  Tj = 150°C: 50% current rating  (aggressive derating)
+  Tj > 175°C: Shutdown (protection)
+```
+
+**3. Airflow Management:**
+
+For air-cooled parallel MOSFETs:
+- Orient MOSFETs in line with airflow direction
+- First MOSFET sees coolest air, last sees heated air
+- Compensate by making downstream devices carry slightly less current (via Rg tuning)
+- CFD simulation recommended for >10kW designs
 
 **Current Sharing Analysis:**
 
 ```
 Two MOSFETs in parallel:
   Device 1: RDS_on = 10 mΩ
-  Device 2: RDS_on = 11 mΩ  (10% higher)
+  Device 2: RDS_on = 11 mΩ  (10% higher, typical production spread)
 
 Total current: 200A
 
-Current distribution:
+Current distribution (static):
   I1 = I_total × (RDS2 / (RDS1 + RDS2))
      = 200 × (11 / 21) = 105A  (52.5%)
 
@@ -790,23 +1017,57 @@ Current distribution:
      = 200 × (10 / 21) = 95A   (47.5%)
 
 Power dissipation:
-  P1 = I1² × RDS1 = 105² × 0.010 = 110W
-  P2 = I2² × RDS2 = 95² × 0.011 = 99W
+  P1 = I1² × RDS1 = 105² × 0.010 = 110W  (+11% from average)
+  P2 = I2² × RDS2 = 95² × 0.011 = 99W    (-11% from average)
 
-Only 10% RDS_on mismatch → 11% power imbalance
+Thermal effect:
+  If P1 > P2, then Tj1 > Tj2
+  Higher Tj1 → higher RDS1 → I1 decreases slightly (self-balancing)
+
+Positive temperature coefficient helps: dRDS/dT ≈ +0.5%/°C
 ```
+
+**Imbalance Mitigation Strategies:**
+
+1. **Device Binning**:
+   - Test RDS_on of batch at same temperature
+   - Select devices within ±3% RDS_on
+   - Costs more but greatly improves sharing
+
+2. **Source Inductance Balancing**:
+   - Add small resistor in source of "faster" MOSFET (0.5-2 mΩ)
+   - Creates negative feedback (higher current → higher voltage drop → less drive)
+   - Improves dynamic current sharing during switching
+
+3. **Active Gate Drive Control** (advanced):
+   - Sense individual MOSFET currents
+   - Adjust gate drive voltage to balance currents
+   - Used in >100kW industrial drives
+   - Adds significant cost and complexity
+
+**When to Parallel MOSFETs:**
+
+**Good candidates:**
+- High current phase (>300A) where single device is not available
+- Thermal constraints (limited heatsink size, high ambient temperature)
+- Need graceful degradation (N+1 redundancy)
+- Cost optimization (3× $10 MOSFETs cheaper than 1× $50 MOSFET)
 
 **When NOT to Parallel:**
 
 - If single device with adequate margin is available
-- Cost of two smaller devices > one larger device
-- PCB space is constrained
+- Cost of N smaller devices + complex layout > one larger device
+- PCB space is severely constrained
 - Cannot achieve symmetrical layout
+- Switching frequency >50 kHz (dynamic imbalance becomes severe)
 
 **Better Alternative: Use Larger Single Device or Module**
-- Power modules (e.g., Infineon HybridPACK) have internal paralleling optimized
-- Single large die better than multiple small dies
-- Simplifies gate drive and layout
+- Power modules (e.g., Infineon HybridPACK, Wolfspeed CAB-series) have internal paralleling optimized
+- Single large die better than multiple small dies (no imbalance)
+- Factory-optimized internal layout
+- Lower inductance (integrated design)
+- Simplifies gate drive and external layout
+- **Cost premium:** 1.3-1.5× cost of equivalent discrete paralleling, but saves design/test time
 
 ---
 
