@@ -19,6 +19,7 @@
    - 2.3 Regen Control Strategies
    - 2.4 Battery Management During Regen
    - 2.5 User-Selectable Regen Levels
+   - 2.6 Hardware Perspective: Circuit-Level Voltage and Current Behavior
 
 ### 3. Braking Strategy and Blending
    - 3.1 Algorithmic Braking Strategies
@@ -2718,6 +2719,804 @@ void update_user_feedback(RegenLevelManager_t *mgr) {
 **Application Notes:**
 1. **Bosch**: "Regenerative Braking Systems for Electric Vehicles" (2019 Technical Paper)
 2. **Tesla**: "Understanding Regenerative Braking" - Owner's Manual Section
+
+---
+
+### 2.6 Hardware Perspective: Circuit-Level Voltage and Current Behavior
+
+This section provides the hardware and circuit-level understanding of regenerative braking, covering how voltage and current behave across the motor controller and their implications for component selection and system design.
+
+#### Back-EMF Generation and Voltage Relationships
+
+**Fundamental Voltage Relationship:**
+
+During regeneration, the motor operates as a generator. The rotating permanent magnets induce a back-EMF in the stator windings:
+
+```
+Motor Operating as Generator:
+
+E_backemf = K_e * ω_m
+
+Where:
+  E_backemf = back-EMF voltage (line-to-neutral, peak) (V)
+  K_e = motor voltage constant (V/rad/s)
+  ω_m = mechanical speed (rad/s)
+
+For three-phase motor (line-to-line RMS):
+  E_ll_rms = √3 * E_backemf / √2
+```
+
+**Key Voltage Relationships:**
+
+```
+For regen to occur:
+  E_backemf > V_dc_bus > V_battery
+
+Energy Flow:
+  Motor EMF → Inverter DC Bus → Battery
+
+Example (400V battery system):
+  Motor at 3000 RPM: E_backemf = 450V (line-to-line RMS)
+  DC Bus:           V_dc = 420V
+  Battery:          V_batt = 380V
+
+  ΔV available for current flow: 450V - 420V = 30V
+  This voltage difference drives regen current
+```
+
+**Circuit-Level View:**
+
+```
+                    Motor (Generator Mode)
+                         |
+                Back-EMF: 450V
+                         |
+                         ↓
+                    +----------+
+                    | Inverter |  ← Controls current flow
+                    +----------+
+                         |
+                   DC Bus: 420V
+                         |
+                    +----------+
+                    |  DC Link |  ← Energy buffer
+                    | Capacitor|
+                    +----------+
+                         |
+                   Battery: 380V
+                         |
+                    +----------+
+                    |  Battery |  ← Energy sink
+                    +----------+
+```
+
+#### Inverter Current Flow During Regeneration
+
+**Three-Phase Inverter Topology:**
+
+```
+                         +V_dc (420V)
+                           |
+            +-------+------+------+-------+
+            |       |             |       |
+          [Q1]    [Q3]           [Q5]
+            |       |             |
+     Phase A|  Phase B|      Phase C|
+            |       |             |
+          [Q2]    [Q4]           [Q6]
+            |       |             |
+            +-------+------+------+-------+
+                           |
+                         -V_dc (0V)
+
+Where:
+  Q1, Q3, Q5 = High-side MOSFETs
+  Q2, Q4, Q6 = Low-side MOSFETs
+
+Each MOSFET has an intrinsic body diode
+```
+
+**Current Flow Paths in Motoring vs Regeneration:**
+
+```
+MOTORING MODE (Power from battery to motor):
+  Current flows: Battery → DC+ → MOSFETs (actively switched) → Motor phases
+
+  Example Phase A positive current:
+    Q1 ON (active): DC+ → Q1 channel → Phase A → Motor
+    Q2 OFF: Body diode blocks reverse current
+
+REGENERATION MODE (Power from motor to battery):
+  Current flows: Motor phases → Body diodes or MOSFETs → DC+ → Battery
+
+  Example Phase A negative current (motor generating):
+    Q1 OFF: Current cannot flow through channel
+    Q2 ON (synchronous rect): Phase A → Q2 channel → DC- → Battery
+
+  OR (if Q2 off during commutation):
+    Q2 body diode: Phase A → Q2 diode → DC- → Battery
+```
+
+**Phase Current Direction Reversal:**
+
+During regeneration, phase currents reverse compared to motoring:
+
+```c
+// Motoring: i_q > 0, current flows from DC bus to motor
+// Regen:    i_q < 0, current flows from motor to DC bus
+
+// Example: Phase A current during regeneration
+// When motor generates, induced EMF creates current in reverse direction
+
+Motoring Phase A:    DC+ → Q1 → Phase A → Neutral
+Regen Phase A:       Phase A → Q2 (diode or channel) → DC- → Battery
+```
+
+#### Synchronous Rectification vs Diode Rectification
+
+**Two Modes of Inverter Operation During Regen:**
+
+**1. Diode Rectification (Passive):**
+- MOSFETs OFF, current flows through body diodes
+- Higher losses (diode forward voltage ~0.7-1.2V)
+- Simpler control, no risk of shoot-through
+- Used in older or simpler controllers
+
+```c
+// Diode rectification - all MOSFETs OFF during regen
+void diode_rectification_mode(void) {
+    // Turn OFF all MOSFETs
+    set_high_side_mosfets(OFF, OFF, OFF);
+    set_low_side_mosfets(OFF, OFF, OFF);
+
+    // Current flows through body diodes based on motor EMF
+    // Energy flows to DC bus, but with higher losses
+}
+
+// Power loss calculation:
+// P_loss_diode = V_f_diode * I_phase * 3 phases
+// Example: 1.0V * 100A * 3 = 300W loss
+```
+
+**2. Synchronous Rectification (Active):**
+- MOSFETs actively switched to conduct current
+- Much lower losses (R_ds_on * I² typically < 50W)
+- Requires careful control to avoid shoot-through
+- Used in modern high-efficiency controllers
+
+```c
+// Synchronous rectification - actively switch MOSFETs during regen
+void synchronous_rectification_mode(void) {
+    // For each phase, turn ON the appropriate MOSFET when current flows
+
+    // Example for Phase A during negative current (regen):
+    if (i_phase_a < 0.0f) {
+        // Current flowing from motor towards DC-
+        set_low_side_mosfet_a(ON);   // Q2 ON - active conduction
+        set_high_side_mosfet_a(OFF); // Q1 OFF - prevent shoot-through
+
+        // Ensure dead-time between transitions
+        delay_ns(DEAD_TIME_NS);
+    }
+
+    // Power loss calculation:
+    // P_loss_mosfet = R_ds_on * I_phase² * 3 phases
+    // Example: 0.005Ω * (100A)² * 3 = 150W loss
+    // 50% reduction compared to diode rectification!
+}
+```
+
+**Comparison Table:**
+
+```
+Parameter              Diode Rectification    Synchronous Rectification
+------------------------------------------------------------------------
+Conduction Loss        300-500W @ 100A       150-250W @ 100A
+Efficiency             92-94%                 95-97%
+Control Complexity     Simple                 Complex
+Shoot-through Risk     None                   Present (requires dead-time)
+Component Cost         Lower                  Higher (better MOSFETs needed)
+Typical Application    Low-cost systems       High-performance EVs
+```
+
+#### DC Link Voltage Dynamics During Regeneration
+
+**DC Link Capacitor Behavior:**
+
+The DC link capacitor acts as an energy buffer between the motor and battery:
+
+```
+Energy Flow During Regen:
+
+Motor → Inverter → DC Capacitor → Battery
+        (fast)      (buffer)      (slow)
+
+The capacitor voltage rises because:
+1. Motor delivers power quickly (milliseconds)
+2. Battery accepts power slowly (limited by C-rate)
+3. Capacitor stores the difference temporarily
+```
+
+**Voltage Rise Calculation:**
+
+```c
+typedef struct {
+    float V_dc_nominal;         // Nominal DC bus voltage (V)
+    float V_dc_current;         // Current DC bus voltage (V)
+    float C_dc_link;            // DC link capacitance (F)
+    float P_regen;              // Regen power from motor (W)
+    float P_to_battery;         // Power to battery (W)
+    float dV_dt;                // Rate of voltage rise (V/s)
+} DCLinkDynamics_t;
+
+void calculate_dc_link_voltage_rise(DCLinkDynamics_t *dc, float dt) {
+    // Net power into DC link capacitor
+    float P_net = dc->P_regen - dc->P_to_battery;
+
+    // Energy stored in capacitor: E = (1/2) * C * V²
+    // Power: P = dE/dt = C * V * (dV/dt)
+    // Therefore: dV/dt = P / (C * V)
+
+    dc->dV_dt = P_net / (dc->C_dc_link * dc->V_dc_current);
+
+    // Update voltage
+    dc->V_dc_current += dc->dV_dt * dt;
+
+    // Check for overvoltage
+    if (dc->V_dc_current > V_DC_OVERVOLTAGE_LIMIT) {
+        // Trigger overvoltage protection
+        trigger_overvoltage_protection();
+
+        // Immediately reduce or stop regen
+        reduce_regen_power();
+    }
+}
+
+// Example calculation:
+// P_regen = 30kW, P_to_battery = 25kW, P_net = 5kW
+// C_dc_link = 1000µF, V_dc = 400V
+// dV/dt = 5000W / (0.001F * 400V) = 12,500 V/s = 12.5 V/ms
+//
+// In 10ms, voltage rises by 125V if battery can't accept power!
+// This is why DC link capacitors must be large
+```
+
+**Capacitor Sizing for Regen:**
+
+```c
+// Design formula for DC link capacitor
+float calculate_required_capacitance(float P_regen_max,
+                                      float P_battery_max,
+                                      float V_dc_nominal,
+                                      float dV_max_allowed,
+                                      float t_response) {
+    // Maximum net power that capacitor must buffer
+    float P_net_max = P_regen_max - P_battery_max;
+
+    // Energy to be stored during battery response time
+    float E_stored = P_net_max * t_response;
+
+    // Energy in capacitor: E = (1/2) * C * (V_high² - V_low²)
+    float V_high = V_dc_nominal + dV_max_allowed;
+    float V_low = V_dc_nominal;
+
+    float C_required = (2.0f * E_stored) / (V_high * V_high - V_low * V_low);
+
+    return C_required;
+}
+
+// Example:
+// P_regen_max = 50kW, P_battery_max = 40kW, P_net = 10kW
+// V_nominal = 400V, dV_max = 30V (7.5% ripple)
+// t_response = 50ms (battery response time)
+//
+// E_stored = 10kW * 0.05s = 500J
+// C_required = (2 * 500J) / (430² - 400²) = 1000J / 24900 = 40.2mF
+//
+// → Use 1000µF minimum (with safety margin)
+```
+
+#### Voltage and Current Waveforms
+
+**Three-Phase Current Waveforms During Regen:**
+
+```c
+// Visualization of phase currents during regeneration
+
+Time-domain view:
+                    Phase A Current (negative = regen)
+  0A  |─────────────────────────────────────────
+      |        ╱╲                    ╱╲
+      |       ╱  ╲                  ╱  ╲
+-50A  |      ╱    ╲                ╱    ╲
+      |     ╱      ╲              ╱      ╲
+-100A |____╱________╲____________╱________╲____
+
+       Phase B leads Phase A by 120° electrical
+       Phase C leads Phase A by 240° electrical
+
+Key observations:
+1. Sinusoidal current (in dq frame, DC in steady state)
+2. Negative polarity compared to motoring
+3. Phase with back-EMF dictates current flow direction
+4. Frequency = electrical speed (pole pairs * mechanical speed)
+```
+
+**DC Bus Current Waveform:**
+
+```c
+// DC bus current during regen (seen by battery)
+
+         I_dc_bus (current TO battery)
+100A |    ___     ___     ___     ___
+     |   /   \   /   \   /   \   /   \  ← Ripple from 3-phase rectification
+ 75A |__/     \_/     \_/     \_/     \__
+     |
+ 50A |________________Average___________________
+     |
+   0 +─────────────────────────────────────────→ Time
+
+Key characteristics:
+1. Average value = regen power / DC voltage
+2. Ripple frequency = 6 * electrical frequency (3-phase, 6-pulse rectification)
+3. Ripple amplitude depends on motor inductance and switching
+4. DC link capacitor smooths this ripple before battery
+```
+
+**DC Bus Voltage Ripple:**
+
+```c
+typedef struct {
+    float V_dc_avg;              // Average DC bus voltage (V)
+    float V_dc_ripple_pk_pk;     // Peak-to-peak ripple (V)
+    float I_regen_avg;           // Average regen current (A)
+    float I_regen_ripple;        // RMS ripple current (A)
+    float ESR_capacitor;         // Capacitor ESR (Ω)
+    float ripple_frequency;      // Ripple frequency (Hz)
+} DCVoltageRipple_t;
+
+void calculate_dc_voltage_ripple(DCVoltageRipple_t *ripple, float f_electrical) {
+    // Ripple frequency for 3-phase rectification
+    ripple->ripple_frequency = 6.0f * f_electrical;  // 6-pulse
+
+    // Voltage ripple from capacitor impedance
+    // V_ripple = I_ripple * Z_cap
+    // where Z_cap = ESR + 1/(2*π*f*C)
+
+    float X_cap = 1.0f / (2.0f * M_PI * ripple->ripple_frequency * C_DC_LINK);
+    float Z_cap = sqrtf(ripple->ESR_capacitor * ripple->ESR_capacitor + X_cap * X_cap);
+
+    ripple->V_dc_ripple_pk_pk = ripple->I_regen_ripple * Z_cap;
+
+    // Typical values for 400V system:
+    // I_regen_ripple_rms ≈ 30A, f_ripple = 1kHz (3000 RPM motor)
+    // C = 1000µF, ESR = 50mΩ
+    // X_cap = 1/(2π*1000*0.001) = 0.159Ω
+    // Z_cap ≈ 0.167Ω
+    // V_ripple_pk_pk = 30A * 0.167Ω = 5V (1.25% of 400V)
+}
+```
+
+#### Power Flow and Loss Mechanisms
+
+**Complete Power Flow During Regeneration:**
+
+```
+Motor Mechanical Power (P_mech)
+          ↓
+     [Motor Losses]  ← Copper loss, iron loss, friction
+          ↓
+Motor Electrical Power (P_motor_elec)
+          ↓
+  [Inverter Losses]  ← Conduction loss, switching loss
+          ↓
+DC Bus Power (P_dc_bus)
+          ↓
+   [Cable Losses]    ← I²R in cables
+          ↓
+Battery Power (P_battery)
+          ↓
+  [Battery Losses]   ← Internal resistance heating
+          ↓
+Stored Energy (ΔE_battery)
+
+
+Total Efficiency Chain:
+η_total = η_motor * η_inverter * η_cables * η_battery
+
+Typical values during regen:
+  η_motor = 0.90-0.93 (regen efficiency)
+  η_inverter = 0.94-0.97 (synchronous rectification)
+  η_cables = 0.98-0.99
+  η_battery = 0.92-0.95 (charging efficiency)
+
+  η_total = 0.75-0.84 (75-84% of kinetic energy recovered)
+```
+
+**Detailed Loss Calculations:**
+
+```c
+typedef struct {
+    // Input
+    float P_mech_in;             // Mechanical power from wheels (W)
+    float omega_mech;            // Mechanical speed (rad/s)
+    float i_d;                   // d-axis current (A)
+    float i_q;                   // q-axis current (A)
+
+    // Motor losses
+    float P_loss_copper;         // Copper losses (W)
+    float P_loss_iron;           // Iron losses (W)
+    float P_loss_mechanical;     // Mechanical losses (W)
+
+    // Inverter losses
+    float P_loss_conduction;     // MOSFET conduction losses (W)
+    float P_loss_switching;      // Switching losses (W)
+
+    // System losses
+    float P_loss_cable;          // Cable losses (W)
+    float P_loss_battery;        // Battery internal losses (W)
+
+    // Output
+    float P_to_battery;          // Power actually stored (W)
+    float efficiency_total;      // Total efficiency (%)
+} RegenPowerLoss_t;
+
+void calculate_regen_power_losses(RegenPowerLoss_t *loss) {
+    // 1. Motor copper losses (I²R)
+    float I_rms = sqrtf(loss->i_d * loss->i_d + loss->i_q * loss->i_q);
+    loss->P_loss_copper = 1.5f * R_STATOR * I_rms * I_rms;  // 3-phase
+
+    // 2. Motor iron losses (simplified)
+    float f_elec = (POLE_PAIRS * loss->omega_mech) / (2.0f * M_PI);
+    loss->P_loss_iron = K_IRON_LOSS * f_elec * f_elec;  // Proportional to f²
+
+    // 3. Mechanical losses
+    loss->P_loss_mechanical = K_FRICTION * loss->omega_mech;
+
+    // 4. Inverter conduction losses
+    // During synchronous rectification
+    loss->P_loss_conduction = 3.0f * R_DS_ON * I_rms * I_rms;
+
+    // 5. Inverter switching losses
+    float f_switching = PWM_FREQUENCY;
+    loss->P_loss_switching = 6.0f * f_switching * (E_ON + E_OFF) * (I_rms / I_RATED);
+
+    // 6. Cable losses
+    float I_dc_bus = loss->P_mech_in / V_DC_BUS;
+    loss->P_loss_cable = R_CABLE * I_dc_bus * I_dc_bus;
+
+    // 7. Battery internal losses
+    float I_battery = I_dc_bus;
+    loss->P_loss_battery = R_BATTERY_INTERNAL * I_battery * I_battery;
+
+    // Calculate power to battery
+    float P_motor_elec = loss->P_mech_in - loss->P_loss_copper -
+                         loss->P_loss_iron - loss->P_loss_mechanical;
+    float P_dc_bus = P_motor_elec - loss->P_loss_conduction -
+                     loss->P_loss_switching;
+    float P_to_battery_terminals = P_dc_bus - loss->P_loss_cable;
+    loss->P_to_battery = P_to_battery_terminals - loss->P_loss_battery;
+
+    // Total efficiency
+    loss->efficiency_total = (loss->P_to_battery / loss->P_mech_in) * 100.0f;
+}
+
+// Example calculation for 30kW regen:
+// P_mech_in = 30kW
+// Motor losses: 1.5kW (copper) + 0.5kW (iron) + 0.2kW (mech) = 2.2kW
+// P_motor_elec = 27.8kW (92.7% motor efficiency)
+// Inverter losses: 0.6kW (conduction) + 0.3kW (switching) = 0.9kW
+// P_dc_bus = 26.9kW (96.8% inverter efficiency)
+// Cable losses: 0.2kW
+// P_to_battery_terminals = 26.7kW
+// Battery losses: 0.8kW
+// P_to_battery = 25.9kW (86.3% total efficiency)
+```
+
+#### Hardware Stress and Implications
+
+**Component Stress During Regeneration:**
+
+**1. MOSFET/IGBT Stress:**
+
+```c
+// Junction temperature rise during regen
+typedef struct {
+    float I_rms_regen;           // RMS current during regen (A)
+    float R_ds_on;               // MOSFET on-resistance (Ω)
+    float R_th_jc;               // Thermal resistance junction-case (°C/W)
+    float R_th_ca;               // Thermal resistance case-ambient (°C/W)
+    float T_ambient;             // Ambient temperature (°C)
+    float T_junction;            // Calculated junction temperature (°C)
+} MOSFETStressRegen_t;
+
+void calculate_mosfet_stress_regen(MOSFETStressRegen_t *mosfet) {
+    // Conduction loss per MOSFET (assuming synchronous rectification)
+    float P_cond = mosfet->R_ds_on * mosfet->I_rms_regen * mosfet->I_rms_regen;
+
+    // Add switching loss (approximately)
+    float P_switch = estimate_switching_loss(mosfet->I_rms_regen);
+    float P_total = P_cond + P_switch;
+
+    // Junction temperature rise
+    float R_th_total = mosfet->R_th_jc + mosfet->R_th_ca;
+    float delta_T = P_total * R_th_total;
+    mosfet->T_junction = mosfet->T_ambient + delta_T;
+
+    // Check against limits
+    if (mosfet->T_junction > T_JUNCTION_MAX) {
+        // Reduce regen power to protect MOSFETs
+        reduce_regen_power();
+        log_warning("MOSFET temperature limit during regen");
+    }
+}
+
+// Key insight: Regen can stress inverter as much as motoring!
+// Even though power flows "backwards", losses are similar
+```
+
+**2. DC Link Capacitor Stress:**
+
+```c
+typedef struct {
+    float I_ripple_rms;          // RMS ripple current (A)
+    float I_ripple_rated;        // Rated ripple current (A)
+    float V_dc_peak;             // Peak DC voltage (V)
+    float V_rated;               // Rated voltage (V)
+    float T_capacitor;           // Capacitor temperature (°C)
+    float stress_factor;         // Stress factor (0-1)
+} CapacitorStressRegen_t;
+
+void calculate_capacitor_stress_regen(CapacitorStressRegen_t *cap) {
+    // Current stress
+    float current_stress = cap->I_ripple_rms / cap->I_ripple_rated;
+
+    // Voltage stress
+    float voltage_stress = cap->V_dc_peak / cap->V_rated;
+
+    // Temperature stress (Arrhenius relationship)
+    float T_rated = 105.0f;  // °C
+    float temp_stress = powf(2.0f, (cap->T_capacitor - T_rated) / 10.0f);
+
+    // Combined stress factor
+    cap->stress_factor = current_stress * voltage_stress * temp_stress;
+
+    // Lifetime impact
+    // L_actual = L_rated / stress_factor
+    // If stress_factor = 2.0, lifetime halved
+
+    if (cap->stress_factor > 1.5f) {
+        log_warning("High capacitor stress during regen: %.2f", cap->stress_factor);
+    }
+}
+
+// Critical insight: Regen causes voltage spikes on DC link
+// Must ensure capacitor voltage rating has adequate margin
+// Typical: 450V cap for 400V system (12.5% margin minimum)
+```
+
+**3. Battery Pack Stress:**
+
+```c
+typedef struct {
+    float I_charge_current;      // Charging current (A)
+    float I_charge_max;          // Maximum continuous charge current (A)
+    float C_rate;                // Charge C-rate
+    float V_cell_max;            // Maximum cell voltage (V)
+    float T_cell;                // Cell temperature (°C)
+    bool stress_warning;         // Stress warning flag
+} BatteryStressRegen_t;
+
+void calculate_battery_stress_regen(BatteryStressRegen_t *batt) {
+    // Calculate C-rate
+    batt->C_rate = batt->I_charge_current / BATTERY_CAPACITY_AH;
+
+    // Check against maximum continuous C-rate
+    // Most EV batteries: 1C to 2C charge rate max
+    if (batt->C_rate > 1.5f) {
+        batt->stress_warning = true;
+        log_warning("High battery charge rate during regen: %.2f C", batt->C_rate);
+
+        // Reduce regen to protect battery
+        reduce_regen_power();
+    }
+
+    // Check cell voltage
+    // During regen, cell voltage rises: V_cell = V_ocv + I*R_internal
+    float V_cell_during_charge = calculate_cell_voltage(batt->I_charge_current);
+    if (V_cell_during_charge > batt->V_cell_max) {
+        // Approaching overvoltage - must reduce regen
+        reduce_regen_power();
+        log_warning("Cell voltage approaching limit during regen");
+    }
+
+    // Temperature check
+    if (batt->T_cell < 0.0f) {
+        // Cold charging is harmful - severely limit regen
+        float temp_factor = fmaxf(0.0f, batt->T_cell / 10.0f);
+        limit_regen_power(temp_factor);
+    }
+}
+```
+
+#### Practical Design Implications
+
+**1. Inverter Design for Regeneration:**
+
+```c
+// Key design parameters for regen-capable inverter
+typedef struct {
+    // MOSFET selection
+    float V_ds_rating;           // Drain-source voltage rating (V)
+    float I_d_continuous;        // Continuous drain current (A)
+    float R_ds_on;               // On-resistance (Ω)
+
+    // DC link design
+    float C_dc_link;             // DC link capacitance (F)
+    float V_cap_rating;          // Capacitor voltage rating (V)
+    float I_ripple_rating;       // Capacitor ripple current rating (A)
+
+    // Protection circuits
+    float V_overvoltage_trip;    // Overvoltage protection threshold (V)
+    float I_overcurrent_trip;    // Overcurrent protection threshold (A)
+    bool dynamic_brake_resistor; // DBR present for voltage clamping
+
+    // Thermal design
+    float R_th_heatsink;         // Heatsink thermal resistance (°C/W)
+    float airflow_cfm;           // Cooling airflow (CFM)
+} InverterDesignRegen_t;
+
+void design_inverter_for_regen(InverterDesignRegen_t *design,
+                                float P_regen_max,
+                                float V_battery_max) {
+    // 1. MOSFET voltage rating
+    // Must handle: V_battery + V_regen_spike + safety margin
+    float V_regen_spike = 50.0f;  // Expected voltage rise during regen
+    float safety_margin = 1.25f;   // 25% margin
+    design->V_ds_rating = (V_battery_max + V_regen_spike) * safety_margin;
+    // Example: (400V + 50V) * 1.25 = 562.5V → Use 650V MOSFETs
+
+    // 2. MOSFET current rating
+    float I_regen_peak = P_regen_max / V_battery_max;
+    design->I_d_continuous = I_regen_peak * 1.5f;  // 50% margin
+    // Example: 50kW / 400V * 1.5 = 188A → Use 200A MOSFETs
+
+    // 3. DC link capacitance
+    design->C_dc_link = calculate_required_capacitance(
+        P_regen_max,
+        P_BATTERY_MAX,
+        V_battery_max,
+        30.0f,  // Max 30V ripple allowed
+        0.05f   // 50ms battery response time
+    );
+
+    // 4. Overvoltage protection
+    design->V_overvoltage_trip = V_battery_max * 1.15f;  // 15% above nominal
+    // Must trip before MOSFET V_ds_max
+
+    // 5. Dynamic brake resistor sizing (if used)
+    if (design->dynamic_brake_resistor) {
+        // DBR must dissipate full regen power if battery full
+        float R_dbr = (V_battery_max * V_battery_max) / P_regen_max;
+        float P_dbr_rating = P_regen_max * 1.2f;  // 20% margin
+
+        log_info("DBR requirements: %.1f Ω, %.1f kW rating",
+                 R_dbr, P_dbr_rating / 1000.0f);
+    }
+}
+```
+
+**2. System-Level Design Considerations:**
+
+```
+Design Checklist for Regen-Capable System:
+═══════════════════════════════════════════════════════════
+
+☐ MOSFETs rated for peak regen voltage (V_batt + spike + margin)
+☐ Body diodes rated for continuous regen current
+☐ DC link capacitor sized for regen power buffering
+☐ Capacitor ESR low enough for acceptable ripple
+☐ Overvoltage protection set correctly (before MOSFET damage)
+☐ Battery BMS can communicate regen limits to motor controller
+☐ Dynamic brake resistor included (for high-power systems)
+☐ Gate drive optimized for synchronous rectification
+☐ Dead-time adjusted to prevent shoot-through during regen
+☐ Thermal management adequate for continuous regen
+☐ Current sensors have bipolar range (+ and - currents)
+☐ DC link precharge circuit handles reverse current
+☐ Software includes all regen limiting strategies
+☐ Fault detection for regen-specific failures
+☐ Testing performed with full battery (worst case)
+```
+
+#### Measurement and Monitoring
+
+**Critical Parameters to Monitor:**
+
+```c
+typedef struct {
+    // Voltage monitoring
+    float V_dc_bus;              // DC bus voltage (V)
+    float V_dc_min;              // Minimum during regen (V)
+    float V_dc_max;              // Maximum during regen (V)
+    float V_battery;             // Battery voltage (V)
+
+    // Current monitoring
+    float I_phase_a;             // Phase A current (A)
+    float I_phase_b;             // Phase B current (A)
+    float I_phase_c;             // Phase C current (A)
+    float I_dc_bus;              // DC bus current (A)
+    float I_battery;             // Battery current (A)
+
+    // Power flow
+    float P_motor;               // Motor electrical power (W)
+    float P_dc_bus;              // DC bus power (W)
+    float P_battery;             // Battery power (W)
+
+    // Efficiency metrics
+    float efficiency_motor;      // Motor efficiency (%)
+    float efficiency_inverter;   // Inverter efficiency (%)
+    float efficiency_total;      // Total regen efficiency (%)
+
+    // Diagnostic flags
+    bool regen_active;           // Regen currently active
+    bool voltage_limiting;       // Voltage limiting active
+    bool current_limiting;       // Current limiting active
+    bool temperature_limiting;   // Temperature limiting active
+} RegenMonitoring_t;
+
+void update_regen_monitoring(RegenMonitoring_t *mon) {
+    // Real-time monitoring during regen
+
+    // Voltage check
+    if (mon->V_dc_bus > mon->V_dc_max) {
+        mon->V_dc_max = mon->V_dc_bus;
+    }
+
+    // Power flow verification
+    // In regen: P_motor < 0, I_battery < 0 (charging)
+    if (mon->P_motor < 0.0f && mon->I_battery < 0.0f) {
+        mon->regen_active = true;
+
+        // Calculate efficiencies
+        mon->efficiency_motor = (mon->P_dc_bus / mon->P_motor) * 100.0f;
+        mon->efficiency_inverter = (mon->P_battery / mon->P_dc_bus) * 100.0f;
+        mon->efficiency_total = (mon->P_battery / mon->P_motor) * 100.0f;
+    }
+    else {
+        mon->regen_active = false;
+    }
+
+    // Log anomalies
+    if (mon->regen_active && mon->efficiency_total < 70.0f) {
+        log_warning("Low regen efficiency: %.1f%%", mon->efficiency_total);
+    }
+}
+```
+
+---
+
+### References for Section 2.6:
+
+**Books:**
+1. *"Power Electronics: Converters, Applications, and Design"* by Ned Mohan et al. - Chapter 8 (DC-AC Inverters and Rectifiers)
+2. *"Advanced Electric Drive Vehicles"* by Ali Emadi - Chapter 4 (Power Electronics for Electric Drives)
+3. *"Pulse Width Modulated DC-AC Converters"* by Dorin O. Neacsu - Chapter 6 (Regenerative Operation)
+
+**Papers:**
+1. Takahashi, I., & Noguchi, T. (1986). "A New Quick-Response and High-Efficiency Control Strategy of an Induction Motor." IEEE Transactions on Industry Applications, IA-22(5), 820-827.
+2. Pitel, I. J., & Talukdar, S. N. (1982). "Characterization of Programmed-Waveform Pulsewidth Modulation." IEEE Transactions on Industry Applications, IA-18(6), 707-715.
+
+**Application Notes:**
+1. **Infineon**: "Understanding Power Losses in MOSFETs" (AN2015-07)
+2. **Texas Instruments**: "Synchronous Rectification in Motor Drives" (SLVA662)
+3. **ON Semiconductor**: "IGBT or MOSFET: Choose Wisely for Inverter Applications" (AND9083/D)
+4. **Vishay**: "DC-Link Capacitor Selection for Motor Drive Applications" (Application Note)
+5. **STMicroelectronics**: "Dead-Time Compensation in Field Oriented Control" (AN4863)
+
+**Standards:**
+1. **IEC 61800-5-1**: "Adjustable Speed Electrical Power Drive Systems - Part 5-1: Safety Requirements - Electrical, Thermal and Energy"
+2. **UL 1741**: "Inverters, Converters, Controllers and Interconnection System Equipment for Use with Distributed Energy Resources"
 
 ---
 
