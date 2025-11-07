@@ -847,3 +847,353 @@ Only 10% RDS_on mismatch → 11% power imbalance
 
 ---
 
+## 4. Gate Driver Design
+
+### 4.1 Gate Driver Requirements
+
+The gate driver provides the voltage and current needed to charge/discharge the MOSFET gate capacitance for fast, controlled switching.
+
+**Key Requirements:**
+
+1. **Voltage Levels**:
+   - **Turn-ON voltage (VGS_on)**: +12V to +18V (Si), +15V to +20V (SiC)
+   - **Turn-OFF voltage (VGS_off)**: 0V or negative (-2V to -5V for noise immunity)
+   - SiC MOSFETs benefit from negative turn-off voltage to prevent false triggering
+
+2. **Drive Current Capability**:
+   ```
+   Peak gate current = Qg / t_switch
+
+   Example: Qg = 150 nC, target switching time = 50 ns
+   I_gate_peak = 150 nC / 50 ns = 3A
+   ```
+
+   - Typical requirements: 2-5A for medium power, 5-10A for high power
+   - Higher current → faster switching → lower switching losses (but more EMI)
+
+3. **Propagation Delay**:
+   - Time from control signal to MOSFET switching
+   - Critical for deadtime accuracy
+   - Target: <50 ns for high-performance drives
+   - Matched delays across all 6 drivers (<10 ns mismatch)
+
+4. **Isolation**:
+   - **High-side drivers**: Must be isolated (floating potential)
+   - **Low-side drivers**: Can be non-isolated (referenced to power ground)
+   - Isolation voltage: >1000V minimum, >2500V for automotive
+   - Isolation methods: Optocoupler, magnetic (transformer), capacitive
+
+5. **Protection Features**:
+   - Undervoltage lockout (UVLO): Prevents operation with insufficient gate voltage
+   - Desaturation (DESAT) detection: Short-circuit protection
+   - Miller clamp: Prevents false turn-on from dv/dt
+   - Overcurrent shutdown
+
+### 4.2 Discrete Gate Driver Circuits
+
+**Basic Discrete Driver (Low-Side):**
+
+```
+MCU PWM ───┐
+           │
+          ┌▼┐ 74HC04         ┌──────┐
+          │ │  Inverter      │ Gate │  Rg   ┌──┐
+          │ ├───────────┬────┤Driver├───RRR─┤Q1│
+          └─┘           │    │ IC   │       └┬─┘
+                        │    │(e.g.,│        │
+                    ┌───▼─┐  │IR2110│      ──┴── Phase A
+                    │     │  └──────┘      (Motor)
+                    │Logic│
+                    │Supply│
+                    │+15V │
+                    └─────┘
+```
+
+**Components:**
+
+1. **Buffer/Level Shifter**:
+   - 74HC series logic for 3.3V to 5V conversion
+   - Texas Instruments SN74LVC series for fast switching
+   - Ensures clean logic transitions
+
+2. **Gate Driver IC** (e.g., Infineon 2ED020I12-F2, Texas Instruments UCC27714):
+   - Provides high peak current (2-10A)
+   - Level shifting for high-side
+   - Built-in deadtime generation
+   - UVLO protection
+
+3. **Gate Resistor (Rg)**:
+   - Controls turn-on/turn-off speed
+   - Typical: 1-10Ω for Si MOSFETs, 2-20Ω for SiC
+   - Trade-off: Fast switching (low Rg) vs EMI/ringing (high Rg)
+
+4. **Turn-off Diode and Resistor (Optional)**:
+   ```
+         ┌────Rg_on───┐
+   Gate  │            │  MOSFET Gate
+   Drive ├──┐    ┌────┤
+         │  │    │    │
+         │  D    Rg_off
+         │  │    │
+         └──┴────┴────┘
+   ```
+   - Allows asymmetric switching (slow turn-on, fast turn-off)
+   - Reduces turn-on EMI while maintaining low turn-off loss
+
+**High-Side Bootstrap Circuit:**
+
+```
+                  VDD (+15V)
+                   │
+                   D_boot (Fast diode)
+                   │
+    Low ───────────┴──────── C_boot ──┬──── VCC (Driver supply)
+    Side                     (1-10µF)  │
+    Switch                             │
+    OFF                         ┌──────┴───────┐
+                                │   High-Side  │
+    MCU ───────────────────────┤ Gate Driver  │
+    PWM                         │     IC       │
+                                └──────┬───────┘
+                                       │
+                                      Gate ─── High-Side MOSFET
+```
+
+**Bootstrap Operation:**
+- When low-side switch is ON, bootstrap capacitor charges through diode
+- Provides floating supply for high-side driver
+- Simple and low-cost solution
+
+**Bootstrap Limitations:**
+- Requires periodic low-side conduction to recharge capacitor
+- Not suitable for >95% duty cycle or DC operation
+- Capacitor must be sized for gate charge and leakage
+
+**Bootstrap Capacitor Sizing:**
+```
+C_boot ≥ 10 × Qg / ΔV_ripple
+
+Example:
+  Qg = 150 nC, acceptable ripple = 1V
+  C_boot ≥ 10 × 150 nC / 1V = 1.5 µF
+
+Use 2.2 µF or 4.7 µF ceramic (X7R) for margin
+```
+
+### 4.3 Integrated Gate Driver ICs
+
+**Popular Gate Driver ICs:**
+
+| IC Family | Manufacturer | Features | Isolation | Use Case |
+|-----------|--------------|----------|-----------|----------|
+| **IR2110/IR2301** | Infineon | Bootstrap high-side, 2A | No | Low-cost Si MOSFET |
+| **UCC27714** | TI | 4A peak, advanced protection | No | Medium power Si/SiC |
+| **SI827x** | Silicon Labs | Isolated, 4A, up to 5kV | Yes (capacitive) | High-performance |
+| **ACPL-33GT** | Broadcom | Isolated, 2.5A gate drive | Yes (optocoupler) | Industrial |
+| **1ED3491** | Infineon | Coreless transformer isolation | Yes (magnetic) | Automotive SiC |
+| **UCC21750** | TI | 10A, reinforced isolation | Yes (capacitive) | High-power SiC |
+
+**Infineon IR2110 (Classic Bootstrap Driver):**
+
+Features:
+- 500V max floating voltage
+- 2A source/sink current
+- Built-in UVLO
+- Low propagation delay (~150 ns)
+- Low cost (~$1-2)
+
+Limitations:
+- No galvanic isolation
+- Basic protection only
+- Not suitable for SiC (limited current)
+
+**Texas Instruments UCC27714 (Advanced Non-Isolated):**
+
+Features:
+- 4A peak drive current
+- Split outputs (separate high/low side)
+- Programmable deadtime
+- DESAT protection input
+- Faster propagation (~50 ns)
+- Cost: ~$3-5
+
+**Infineon 1ED3491 (Isolated, Automotive-Grade):**
+
+Features:
+- Coreless transformer isolation (1500V)
+- 10A peak current (excellent for SiC)
+- Miller clamping
+- Advanced diagnostics
+- Automotive qualified (AEC-Q100)
+- Cost: ~$8-12
+
+Best for: High-performance SiC motor drives
+
+### 4.4 Bootstrap vs Isolated Power Supply
+
+**Comparison:**
+
+| Aspect | Bootstrap | Isolated DC-DC |
+|--------|-----------|----------------|
+| **Cost** | Low ($2-5 per phase) | High ($15-30 per phase) |
+| **Complexity** | Simple | Complex |
+| **Duty Cycle** | <95% | 0-100% |
+| **Startup** | Requires low-side ON first | Immediate |
+| **Reliability** | Good | Excellent |
+| **Switching Frequency** | >5 kHz recommended | Any |
+| **Best for** | Standard motor drives | Servo, special applications |
+
+**When to Use Bootstrap:**
+- Standard FOC motor drive (alternating PWM)
+- Cost-sensitive designs
+- PWM frequency >5 kHz
+- Normal duty cycle range (20-80%)
+
+**When to Use Isolated Supply:**
+- High duty cycle operation (>95%)
+- Low switching frequency (<5 kHz)
+- DC operation required
+- Safety-critical applications (medical, aerospace)
+- Multiple paralleled inverters sharing control
+
+**Isolated Supply Options:**
+
+1. **Isolated DC-DC Modules**:
+   - RECOM R1.5P-xxx series (1.5W, 1kV isolation)
+   - MORNSUN B0515XT-1WR3 (1W, 3kV isolation)
+   - Cost: $5-10 per module × 3 high-side = $15-30
+
+2. **Custom Flyback Transformer**:
+   - Single transformer with multiple secondary windings
+   - Lower cost for production volumes
+   - Requires careful design (leakage inductance, isolation)
+
+3. **Isolated Gate Driver ICs** (as shown in 4.3):
+   - Self-contained solution
+   - Built-in isolation (no external DC-DC needed)
+   - Higher IC cost but simpler BOM
+
+### 4.5 Gate Resistance Selection
+
+**Trade-offs:**
+
+```
+Low Rg (Fast Switching):          High Rg (Slow Switching):
+✓ Lower switching losses          ✓ Reduced EMI
+✓ Lower junction temperature      ✓ Less ringing/overshoot
+✓ Higher efficiency               ✓ Safer for layout issues
+✗ Higher EMI                      ✗ Higher switching losses
+✗ More ringing/overshoot          ✗ Higher temperature
+✗ Requires excellent PCB layout   ✗ Lower efficiency
+```
+
+**Calculation Method:**
+
+```
+Target switching time = t_sw
+MOSFET gate charge = Qg
+Gate drive voltage = VGS_drive
+
+Rg ≈ (VGS_drive × t_sw) / Qg
+
+Example:
+  Qg = 150 nC
+  VGS_drive = 15V
+  Target t_sw = 100 ns
+
+  Rg = (15 × 100n) / 150n = 10Ω
+```
+
+**Practical Guidelines:**
+
+| MOSFET Type | Typical Rg | Switching Time | Application |
+|-------------|------------|----------------|-------------|
+| Si MOSFET (low power) | 10-47Ω | 100-300 ns | Consumer, <5kW |
+| Si MOSFET (high power) | 2-10Ω | 50-150 ns | Automotive, 5-50kW |
+| SiC MOSFET | 5-15Ω | 30-80 ns | High-efficiency, >20kW |
+| GaN FET | 1-5Ω | 10-30 ns | High-frequency, compact |
+
+**External vs Internal Rg:**
+
+Some gate driver ICs have internal gate resistance (e.g., 2-4Ω). If using these:
+
+```
+Total Rg = Rg_internal + Rg_external
+
+If IC has 3Ω internal and you want 10Ω total:
+  Rg_external = 10 - 3 = 7Ω  (use standard 6.8Ω)
+```
+
+**Turn-on vs Turn-off Resistance:**
+
+For reduced EMI with minimal loss penalty:
+- **Turn-on**: Slower (higher Rg) → reduces di/dt and EMI
+- **Turn-off**: Faster (lower Rg) → reduces switching loss
+
+**Asymmetric Gate Drive Circuit:**
+```
+        Rg_on (10Ω)
+         ─RRR─
+            │
+   Gate ────┼──── MOSFET Gate
+   Drive    │
+         ───┤>├─── Diode (allows bypass of Rg_on during turn-off)
+            │
+        Rg_off (2Ω)
+         ─RRR─
+            │
+           GND
+```
+
+Result: Turn-on time = 100 ns, turn-off time = 20 ns
+
+**Negative Gate Voltage (for SiC):**
+
+SiC MOSFETs benefit from negative turn-off voltage:
+- VGS_on = +15V to +20V
+- VGS_off = -3V to -5V
+- Prevents false turn-on from high dv/dt
+- Improves noise immunity
+
+Use split-rail gate driver (e.g., UCC21732, SI8271) or discrete negative supply.
+
+---
+
+### References for Section 4:
+
+**Books:**
+1. *"Gate Drive Circuits for Power Semiconductor Devices"* by Dr. Ulrich Nicolai (SEMIKRON)
+2. *"Power Electronics Design Handbook"* by Nihal Kularatna - Chapter on gate drives
+
+**Application Notes:**
+1. **Infineon**: "Gate Resistance - What is the Right Value?" (Application Note AN2017-06)
+2. **Texas Instruments**: "Gate Driver Fundamentals and Selection Criteria" (SLUA618)
+3. **Wolfspeed**: "Driving SiC MOSFET: Gate Driver Design Considerations" (Application Note)
+4. **ON Semiconductor**: "Understanding IGBT/MOSFET Gate Driver Circuits" (AND9083/D)
+5. **Microchip**: "Gate Drive Considerations for SiC MOSFETs" (Application Note)
+6. **Silicon Labs**: "Isolated Gate Driver Design for SiC MOSFETs" (AN1048)
+
+**Articles and Papers:**
+1. "Gate Drive Optimization for SiC MOSFET-Based Motor Drives" - IEEE APEC Conference
+2. "Bootstrap Gate Driver Design Challenges and Solutions" - PCIM Europe
+3. "Negative Gate Voltage Effects on SiC MOSFET Reliability" - IEEE Transactions on Power Electronics
+
+**Videos:**
+1. **TI Precision Labs**: "Gate Driver Design for Motor Control" (YouTube series)
+2. **Wolfspeed**: "Best Practices for SiC MOSFET Gate Drive Design" (YouTube)
+3. **Infineon**: "Gate Driver ICs Explained" (YouTube)
+4. **Microchip**: "Isolated vs Non-Isolated Gate Drivers" (Webinar)
+
+**Datasheets:**
+1. Infineon IR2110 (600V Half-Bridge Driver)
+2. Texas Instruments UCC27714 (Advanced 4A Driver with Protection)
+3. Silicon Labs Si8271 (Isolated 4A Gate Driver IC)
+4. Infineon 1ED3491 (Automotive Isolated Driver for SiC)
+
+**Design Tools:**
+1. **Texas Instruments**: WEBENCH Power Designer (includes gate driver calculator)
+2. **Infineon**: IPOSIM (Inverter Power Stage Simulator)
+3. **Wolfspeed**: SiC MOSFET Gate Driver Design Tool (online calculator)
+
+---
+
