@@ -3333,5 +3333,622 @@ if v_limited != v_desired:
 
 ---
 
-*To be continued in Section 6.4: Current Control Loop Design*
+### 6.4 Current Control Loop Design
+
+The current control loop is the **inner, fast loop** that forces the actual motor currents (id, iq) to track their references (i*d, i*q). This is the heart of FOC - without good current control, everything else fails.
+
+#### 6.4.1 Current Loop Plant Model
+
+First, let's understand what we're controlling. The PMSM electrical equations in dq frame are:
+
+```
+Vd = Rs·id + Ld·did/dt - ωe·Lq·iq       [d-axis]
+Vq = Rs·iq + Lq·diq/dt + ωe·Ld·id + ωe·λm   [q-axis]
+```
+
+If we add feedforward compensation to cancel the cross-coupling terms:
+
+```
+Vd_ff = -ωe·Lq·iq
+Vq_ff = ωe·Ld·id + ωe·λm
+```
+
+Then the decoupled equations become:
+
+```
+Vd_PI = Rs·id + Ld·did/dt
+Vq_PI = Rs·iq + Lq·diq/dt
+```
+
+**Transfer function for d-axis:**
+```
+         id(s)           1/Rs              1/τd
+Gd(s) = ------- = ---------------- = -------------
+        Vd(s)     1 + (Ld/Rs)·s      1 + τd·s
+
+where τd = Ld/Rs  (electrical time constant)
+```
+
+**Transfer function for q-axis:**
+```
+         iq(s)           1/Rs              1/τq
+Gq(s) = ------- = ---------------- = -------------
+        Vq(s)     1 + (Lq/Rs)·s      1 + τq·s
+
+where τq = Lq/Rs
+```
+
+**This is a first-order system!** Very simple to control with PI.
+
+**Typical values for a small PMSM:**
+```
+Rs = 0.5 Ω
+Ld = Lq = 1 mH
+τ = L/Rs = 1e-3/0.5 = 2 ms
+Corner frequency: fc = 1/(2π·τ) = 80 Hz
+```
+
+#### 6.4.2 PI Controller Design
+
+For each axis (d and q), we use a PI controller:
+
+```
+         Kp·s + Ki
+C(s) = ------------ = Kp + Ki/s
+             s
+```
+
+**Continuous-time control law:**
+```
+V*(t) = Kp·e(t) + Ki·∫e(τ)dτ
+
+where e(t) = i*(t) - i(t)  (current error)
+```
+
+**Discrete-time implementation (more common):**
+```
+V*[k] = Kp·e[k] + Vi[k]
+
+where:
+  e[k] = i*[k] - i[k]
+  Vi[k] = Vi[k-1] + Ki·Ts·e[k]  (integrator state)
+```
+
+#### 6.4.3 PI Gain Calculation - Bandwidth Method
+
+The most common tuning method is to **specify desired bandwidth** and calculate gains accordingly.
+
+**Closed-loop transfer function with PI controller:**
+
+```
+                C(s)·G(s)              (Kp·s + Ki)·(1/Rs)
+T(s) = ------------------------- = ---------------------------
+        1 + C(s)·G(s)            s² + (Rs/L + Kp/L)·s + Ki/L
+```
+
+**For a second-order system, we want:**
+```
+T(s) = ωn² / (s² + 2·ζ·ωn·s + ωn²)
+
+where:
+  ωn = natural frequency (rad/s)
+  ζ = damping ratio (typically 0.707 for critical damping)
+```
+
+**Matching coefficients:**
+
+```
+2·ζ·ωn = Rs/L + Kp/L    →    Kp = 2·ζ·ωn·L - Rs
+ωn² = Ki/L              →    Ki = ωn²·L
+```
+
+**For critical damping (ζ = 0.707) and bandwidth ωbw:**
+
+```
+ωn = ωbw / √(1 - 2·ζ² + √(4·ζ⁴ - 4·ζ² + 2))
+   ≈ ωbw  (for ζ = 0.707)
+
+Therefore:
+Kp = 2·0.707·ωbw·L - Rs ≈ √2·ωbw·L - Rs
+Ki = ωbw²·L
+```
+
+**Simplified formulas (commonly used):**
+
+For bandwidth fbw in Hz:
+```
+ωbw = 2π·fbw
+
+Kp = L·ωbw
+Ki = Rs·ωbw
+```
+
+These simplified formulas give good performance and are widely used in industry!
+
+#### 6.4.4 Design Example - Current Loop
+
+Let's design a current controller for our example motor.
+
+**Given parameters:**
+```
+Rs = 0.5 Ω
+Ld = Lq = 1 mH = 0.001 H
+P = 4 pole pairs
+Vdc = 24 V
+fsw = 10 kHz (PWM frequency)
+```
+
+**Step 1: Choose current loop bandwidth**
+
+Rule of thumb: **Current loop bandwidth = 1/10 of PWM frequency**
+
+```
+fbw_current = fsw / 10 = 10000 / 10 = 1000 Hz
+ωbw_current = 2π·1000 = 6283 rad/s
+```
+
+This ensures the controller can respond within one PWM cycle.
+
+**Step 2: Calculate PI gains**
+
+```
+Kp = L·ωbw = 0.001 × 6283 = 6.28
+Ki = Rs·ωbw = 0.5 × 6283 = 3142
+```
+
+**Step 3: Convert to discrete time**
+
+For sampling period Ts = 1/fsw = 100 μs:
+
+```matlab
+% Discrete PI implementation
+error = i_ref - i_measured
+proportional = Kp * error
+integrator = integrator + Ki * Ts * error
+
+v_out = proportional + integrator
+```
+
+**Step 4: Add anti-windup**
+
+When voltage saturates, prevent integrator windup:
+
+```matlab
+% Calculate voltage limit
+V_max = Vdc / sqrt(3) = 24 / 1.732 = 13.86 V
+
+% Apply saturation
+v_limited = saturate(v_out, -V_max, V_max)
+
+% Back-calculate integrator
+if v_limited ~= v_out
+    integrator = v_limited - proportional
+end
+```
+
+#### 6.4.5 Advanced Current Control Techniques
+
+**1. Feedforward Decoupling**
+
+Add cross-coupling compensation for perfect decoupling:
+
+```matlab
+% Measure speed
+omega_e = speed_measured * pole_pairs
+
+% Calculate feedforward terms
+Vd_ff = -omega_e * Lq * iq
+Vq_ff = omega_e * Ld * id + omega_e * lambda_m
+
+% Total voltage command
+Vd_total = Vd_PI + Vd_ff
+Vq_total = Vq_PI + Vq_ff
+```
+
+This dramatically improves dynamic response!
+
+**2. Active Damping**
+
+Add derivative term to reduce overshoot:
+
+```matlab
+% PID controller (optional)
+derivative = Kd * (e[k] - e[k-1]) / Ts
+
+v_out = proportional + integrator + derivative
+```
+
+Typically not needed if bandwidth is chosen correctly.
+
+**3. Current Limiting**
+
+Protect motor and inverter:
+
+```matlab
+% Calculate total current
+I_total = sqrt(id^2 + iq^2)
+
+% If over limit, scale references
+if I_total > I_max
+    scale = I_max / I_total
+    id_ref = id_ref * scale
+    iq_ref = iq_ref * scale
+end
+```
+
+**4. Voltage Limiting**
+
+Ensure voltage stays within hexagon boundary:
+
+```matlab
+% Calculate voltage magnitude
+V_total = sqrt(Vd^2 + Vq^2)
+
+% Maximum voltage (linear region)
+V_max = Vdc / sqrt(3)
+
+% If over limit, scale voltages
+if V_total > V_max
+    scale = V_max / V_total
+    Vd = Vd * scale
+    Vq = Vq * scale
+end
+```
+
+#### 6.4.6 Current Loop Performance Analysis
+
+**Step response characteristics:**
+
+With our designed controller (fbw = 1 kHz):
+```
+Rise time: tr ≈ 0.35/fbw = 0.35 ms
+Settling time: ts ≈ 4.6/ωbw = 0.73 ms
+Overshoot: MP ≈ 4% (for ζ = 0.707)
+```
+
+**Bode plot analysis:**
+
+```
+Low frequency gain: 40 dB (100:1 error reduction)
+Bandwidth: 1000 Hz
+Phase margin: ~65° (good stability)
+Gain margin: >10 dB (robust)
+```
+
+**Disturbance rejection:**
+
+The closed-loop system can reject:
+- Load torque changes
+- Speed variations
+- Voltage fluctuations
+- Parameter variations (within limits)
+
+### 6.5 Speed Control Loop Design
+
+The speed control loop is the **outer, slow loop** that generates the torque/current command (i*q) to track the speed reference.
+
+#### 6.5.1 Speed Loop Plant Model
+
+**Mechanical equation:**
+```
+J·dω/dt = τ - τ_load - B·ω
+
+where:
+  J = moment of inertia (kg·m²)
+  ω = mechanical speed (rad/s)
+  τ = electromagnetic torque (N·m)
+  τ_load = load torque (N·m)
+  B = viscous friction coefficient (N·m·s)
+```
+
+**Transfer function from torque to speed:**
+
+```
+         ω(s)            1/B              1/τm
+G_speed(s) = ------- = ------------- = -------------
+            τ(s)      J/B·s + 1       τm·s + 1
+
+where τm = J/B  (mechanical time constant)
+```
+
+**With current loop in feedback:**
+
+If the current loop is fast (bandwidth ≫ speed loop), we can approximate it as unity gain:
+```
+iq ≈ i*q  (current loop tracks perfectly)
+```
+
+Then:
+```
+τ = (3/2)·P·λm·iq = Kt·iq
+
+where Kt = (3/2)·P·λm  (torque constant)
+```
+
+**Complete speed loop plant:**
+```
+         ω(s)         Kt/B         Kt/(B·τm)
+G(s) = -------- = ------------- = -------------
+        i*q(s)    J/B·s + 1       s + 1/τm
+```
+
+This is also a **first-order system** (assuming current loop is fast).
+
+**Typical values:**
+```
+J = 0.00005 kg·m²  (small motor)
+B = 0.00001 N·m·s  (low friction)
+τm = J/B = 5 s  (mechanical time constant)
+fc = 1/(2π·τm) = 0.032 Hz  (very slow!)
+```
+
+Notice: Mechanical dynamics are **much slower** than electrical dynamics (5000 ms vs 2 ms).
+
+#### 6.5.2 Speed PI Controller Design
+
+**PI controller structure:**
+```
+         Kp_speed·s + Ki_speed
+C_speed(s) = ----------------------
+                   s
+
+i*q(t) = Kp_speed·eω(t) + Ki_speed·∫eω(τ)dτ
+
+where eω(t) = ω_ref(t) - ω_measured(t)
+```
+
+**Discrete implementation:**
+```matlab
+% Speed error (mechanical rad/s)
+error_speed = omega_ref - omega_measured
+
+% PI calculation
+proportional = Kp_speed * error_speed
+integrator_speed = integrator_speed + Ki_speed * Ts_speed * error_speed
+
+% Current command (q-axis)
+iq_ref = proportional + integrator_speed
+
+% Limit output
+iq_ref = saturate(iq_ref, -Iq_max, Iq_max)
+```
+
+#### 6.5.3 Speed Loop Gain Calculation
+
+Using the bandwidth method:
+
+**Desired bandwidth:** Choose to be **5-10 times slower** than current loop:
+```
+fbw_current = 1000 Hz
+fbw_speed = 100 Hz (10× slower)
+ωbw_speed = 2π·100 = 628 rad/s
+```
+
+**Calculate gains:**
+
+With current loop approximated as unity and plant G(s) = Kt/(τm·s + 1):
+
+```
+Kp_speed = J·ωbw / Kt
+Ki_speed = B·ωbw / Kt
+```
+
+**Alternative formulation:**
+
+For mechanical systems, a common approach is:
+
+```
+Kp_speed = 2·ζ·ωn·J / Kt
+Ki_speed = ωn²·J / Kt
+
+where ζ = 0.707, ωn = ωbw
+```
+
+#### 6.5.4 Design Example - Speed Loop
+
+Continuing with our example motor:
+
+**Given parameters:**
+```
+J = 0.00005 kg·m²
+B = 0.00001 N·m·s
+P = 4 pole pairs
+λm = 0.1 Wb
+Kt = (3/2)·P·λm = 1.5 × 4 × 0.1 = 0.6 N·m/A
+Iq_max = 10 A (current limit)
+```
+
+**Step 1: Choose speed loop bandwidth**
+```
+fbw_speed = 100 Hz
+ωbw_speed = 2π·100 = 628 rad/s
+```
+
+**Step 2: Calculate PI gains**
+```
+Kp_speed = J·ωbw / Kt = 0.00005 × 628 / 0.6 = 0.0523
+Ki_speed = B·ωbw / Kt = 0.00001 × 628 / 0.6 = 0.0105
+```
+
+**Step 3: Choose speed loop sampling rate**
+
+Speed loop can run slower than current loop:
+```
+fs_speed = 1000 Hz (every 10th current loop cycle)
+Ts_speed = 0.001 s
+```
+
+**Step 4: Implement with anti-windup**
+
+```matlab
+% Speed loop (runs at 1 kHz)
+function iq_ref = speed_controller(omega_ref, omega_measured)
+    persistent integrator_speed
+    if isempty(integrator_speed)
+        integrator_speed = 0;
+    end
+
+    % Parameters
+    Kp_speed = 0.0523;
+    Ki_speed = 0.0105;
+    Ts_speed = 0.001;
+    Iq_max = 10;  % Maximum q-axis current
+
+    % Speed error (rad/s)
+    error_speed = omega_ref - omega_measured;
+
+    % PI calculation
+    proportional = Kp_speed * error_speed;
+    integrator_speed = integrator_speed + Ki_speed * Ts_speed * error_speed;
+
+    % Current command
+    iq_ref = proportional + integrator_speed;
+
+    % Anti-windup: limit and back-calculate
+    iq_ref_limited = max(min(iq_ref, Iq_max), -Iq_max);
+
+    if iq_ref ~= iq_ref_limited
+        integrator_speed = iq_ref_limited - proportional;
+    end
+
+    iq_ref = iq_ref_limited;
+end
+```
+
+#### 6.5.5 Cascade Loop Tuning Procedure
+
+**Step-by-step tuning process:**
+
+**Step 1: Tune Current Loop First**
+
+1. Set speed reference to zero (motor stationary)
+2. Apply step change to i*q (e.g., 0 → 2 A)
+3. Measure iq response
+4. Adjust Kp and Ki until:
+   - Rise time: ~0.3-0.5 ms
+   - Overshoot: <10%
+   - No oscillation
+5. Repeat for i*d (usually same gains work)
+
+**Step 2: Verify Current Loop Bandwidth**
+
+1. Inject sine wave into i*q reference
+2. Sweep frequency from 10 Hz to 2 kHz
+3. Measure -3 dB bandwidth
+4. Should be ~1 kHz (1/10 of PWM frequency)
+
+**Step 3: Tune Speed Loop**
+
+1. With current loop working, apply step to ω_ref
+2. Start with low gains (Kp_speed/10, Ki_speed/10)
+3. Gradually increase gains until:
+   - Good tracking (low steady-state error)
+   - Fast response (settling time ~0.02-0.05 s)
+   - No overshoot (or <10% overshoot)
+   - No oscillation
+
+**Step 4: Test Combined System**
+
+1. Apply various speed commands (steps, ramps, sinusoids)
+2. Apply load torque disturbances
+3. Verify current limits are enforced
+4. Check for any instability
+
+**Common tuning issues:**
+
+| Symptom | Likely Cause | Solution |
+|---------|--------------|----------|
+| Slow rise time | Gains too low | Increase Kp |
+| Overshoot | Kp too high or Ki too low | Reduce Kp, increase Ki |
+| Oscillation | Bandwidth too high | Reduce gains |
+| Steady-state error | Ki too low | Increase Ki |
+| Noisy current | Speed loop too fast | Reduce speed loop bandwidth |
+| Poor disturbance rejection | Gains too low | Increase Ki |
+
+#### 6.5.6 Speed Loop Performance Analysis
+
+**With our designed controller:**
+
+```
+Bandwidth: 100 Hz
+Rise time: ~3.5 ms
+Settling time: ~20 ms
+Overshoot: <5%
+Steady-state error: <1% (with load)
+```
+
+**Load disturbance rejection:**
+
+With integral action, steady-state error due to constant load is zero!
+
+```
+At steady state with load τ_load:
+  i*q = τ_load/Kt  (PI automatically compensates)
+```
+
+**Frequency response:**
+
+```
+Low frequency gain: 60 dB (1000:1 error reduction)
+Bandwidth: 100 Hz
+Phase margin: ~65°
+Stability: Good
+```
+
+#### 6.5.7 Advanced Speed Control Topics
+
+**1. Acceleration Feedforward**
+
+Improve transient response by compensating inertia:
+
+```matlab
+% Reference acceleration
+alpha_ref = (omega_ref[k] - omega_ref[k-1]) / Ts
+
+% Feedforward torque
+tau_ff = J * alpha_ref
+
+% Add to PI output
+iq_ref = iq_PI + tau_ff / Kt
+```
+
+**2. Load Observer**
+
+Estimate load torque for better disturbance rejection:
+
+```matlab
+% Simple load observer
+tau_load_est = tau_load_est + K_obs * (omega_measured - omega_predicted)
+
+% Use in feedforward
+iq_ff = tau_load_est / Kt
+```
+
+**3. Reference Filtering**
+
+Add ramp limiter to prevent sudden accelerations:
+
+```matlab
+% Limit acceleration
+max_accel = 1000;  % rad/s²
+delta_omega = omega_ref - omega_ref_prev;
+delta_omega = saturate(delta_omega, -max_accel*Ts, max_accel*Ts);
+omega_ref_filtered = omega_ref_prev + delta_omega;
+```
+
+**4. Adaptive Gains**
+
+Adjust gains based on operating point:
+
+```matlab
+% Increase gains at low speed for better response
+if abs(omega_measured) < 10  % rad/s
+    Kp_speed = Kp_speed * 2;
+    Ki_speed = Ki_speed * 2;
+end
+```
+
+---
+
+*To be continued in Section 6.6: Field Weakening and High-Speed Operation*
 
