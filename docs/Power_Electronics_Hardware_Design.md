@@ -2386,3 +2386,461 @@ Ringing frequency: 10-100 MHz typical (minimize with layout)
 
 ---
 
+## 7. Thermal Management
+
+Thermal management is critical for reliability and performance of motor controllers. MOSFETs generate significant heat that must be removed to prevent thermal runaway and ensure long-term reliability.
+
+### 7.1 Power Loss Calculations
+
+**Total Power Loss in Inverter:**
+
+```
+P_total = P_conduction + P_switching + P_gate + P_other
+
+Where:
+  P_conduction = Conduction losses in MOSFETs
+  P_switching = Switching losses
+  P_gate = Gate drive power
+  P_other = DC link cap ESR, shunt resistor, etc.
+```
+
+**Conduction Loss (Per MOSFET):**
+
+```
+P_cond = I²_RMS × RDS_on(Tj)
+
+Key considerations:
+- RDS_on increases with temperature (typ. +0.5%/°C)
+- RDS_on at 150°C ≈ 1.6-1.8× RDS_on at 25°C
+
+Example:
+  I_RMS = 100A per MOSFET
+  RDS_on @ 25°C = 10 mΩ
+  RDS_on @ 150°C = 17 mΩ (70% increase)
+
+  P_cond @ 150°C = 100² × 0.017 = 170W per MOSFET
+```
+
+**Switching Loss (Per MOSFET):**
+
+```
+P_sw = (E_on + E_off) × f_sw
+
+From Section 6.1:
+  E_on ≈ (1/6) × VDS × ID × (tri + tfv)
+  E_off ≈ (1/6) × VDS × ID × (trv + tfi)
+
+Example:
+  VDS = 400V, ID = 100A
+  tri + tfv = 80 ns, trv + tfi = 60 ns
+  f_sw = 15 kHz
+
+  E_on = (1/6) × 400 × 100 × 80n = 0.53 mJ
+  E_off = (1/6) × 400 × 100 × 60n = 0.40 mJ
+  P_sw = (0.53 + 0.40) mJ × 15 kHz = 14W per MOSFET
+```
+
+**Gate Drive Power Loss:**
+
+```
+P_gate = Qg × VGS_drive × f_sw × N_mosfets
+
+Example:
+  Qg = 150 nC, VGS_drive = 15V, f_sw = 15 kHz, 6 MOSFETs
+  P_gate = 150n × 15 × 15k × 6 = 0.2W (negligible)
+```
+
+**Total System Loss Example:**
+
+```
+50 kW motor drive @ 400V DC:
+
+Per MOSFET:
+  P_cond = 170W
+  P_sw = 14W
+  Total per MOSFET = 184W
+
+Six MOSFETs: 6 × 184 = 1104W
+
+Other losses:
+  DC link cap ESR: ~50W
+  Shunt resistors (3× 11W): 33W
+  Gate drivers: 5W
+  Misc: 10W
+
+Total inverter loss = 1202W
+Efficiency = 50000 / (50000 + 1202) = 97.7%
+```
+
+### 7.2 Thermal Resistance and Heat Transfer
+
+**Thermal Resistance Network:**
+
+```
+Heat flows from junction → case → heatsink → ambient
+
+Tj = Ta + P × (Rth_JC + Rth_CS + Rth_SA)
+
+Where:
+  Tj = Junction temperature (°C)
+  Ta = Ambient temperature (°C)
+  P = Power dissipation (W)
+  Rth_JC = Junction-to-case thermal resistance (°C/W)
+  Rth_CS = Case-to-sink thermal resistance (°C/W)
+  Rth_SA = Sink-to-ambient thermal resistance (°C/W)
+```
+
+**Typical Thermal Resistance Values:**
+
+| Component | Typical Rth | Notes |
+|-----------|-------------|-------|
+| Rth_JC (TO-247 MOSFET) | 0.3-0.6 °C/W | From datasheet |
+| Rth_CS (with TIM) | 0.1-0.5 °C/W | Depends on TIM and mounting |
+| Rth_SA (heatsink) | 0.5-5 °C/W | Depends on size, airflow |
+| Rth_SA (liquid cooled) | 0.05-0.2 °C/W | Much better than air |
+
+**Junction Temperature Calculation:**
+
+```
+Maximum junction temperature: Tj_max = 150-175°C (Si), 175-200°C (SiC)
+
+Example:
+  P = 184W per MOSFET
+  Ta = 65°C (hot ambient, under hood)
+  Rth_JC = 0.4 °C/W (TO-247)
+  Rth_CS = 0.2 °C/W (good TIM, proper torque)
+  Rth_SA = 0.8 °C/W (heatsink with fan)
+
+  Tj = 65 + 184 × (0.4 + 0.2 + 0.8) = 65 + 258 = 323°C!
+
+  → THERMAL RUNAWAY! Need better cooling or reduce losses
+```
+
+**Derating for Reliability:**
+
+Target maximum junction temperature for long life:
+- **Automotive/Industrial**: Tj ≤ 125°C (significant margin)
+- **Consumer**: Tj ≤ 150°C
+- **Short bursts**: Tj ≤ 175°C (max rating)
+
+**Reliability vs Temperature:**
+
+```
+MTBF halves for every ~10-15°C increase in junction temperature
+
+Example:
+  MTBF @ Tj=100°C: 100,000 hours
+  MTBF @ Tj=125°C: 35,000 hours
+  MTBF @ Tj=150°C: 12,000 hours
+
+Keeping cool = longer life!
+```
+
+### 7.3 Heatsink Design and Capacity Calculations
+
+**Required Heatsink Thermal Resistance:**
+
+```
+Rth_SA_required = (Tj_max - Ta) / P - Rth_JC - Rth_CS
+
+Example (continuing from above):
+  Target Tj_max = 125°C (with margin)
+  Ta = 65°C
+  P = 184W per MOSFET (but 6 MOSFETs on same heatsink!)
+  P_total_on_heatsink = 6 × 184 = 1104W
+  Rth_JC = 0.4 °C/W
+  Rth_CS = 0.2 °C/W
+
+  Rth_SA_required = (125 - 65) / 1104 - 0 = 0.054 °C/W
+
+  Note: We don't subtract Rth_JC and Rth_CS when calculating for the
+  common heatsink, only when calculating individual junction temperatures.
+
+  More accurate:
+  For worst-case MOSFET:
+    Tj = Ta + Rth_SA × P_total + (Rth_JC + Rth_CS) × P_mosfet
+    125 = 65 + Rth_SA × 1104 + (0.4 + 0.2) × 184
+    Rth_SA = (125 - 65 - 110.4) / 1104 = -0.045 °C/W
+
+  → Impossible with air cooling! Need liquid cooling or reduce losses.
+```
+
+**Heatsink Selection:**
+
+**Natural Convection (No Fan):**
+- Rth_SA: 1-10 °C/W
+- Suitable for: <100W total power
+- Pros: Silent, reliable (no moving parts)
+- Cons: Large size required
+
+**Forced Air Cooling (With Fan):**
+- Rth_SA: 0.2-2 °C/W (depends on airflow)
+- Suitable for: 100W - 5kW
+- Pros: Compact, cost-effective
+- Cons: Fan maintenance, noise, dust
+
+**Liquid Cooling:**
+- Rth_SA: 0.01-0.2 °C/W
+- Suitable for: >2kW to 200+ kW
+- Pros: Excellent performance, compact
+- Cons: Complex, expensive, leak risk
+
+**Heatsink Sizing Example:**
+
+```
+Required: Rth_SA = 0.5 °C/W for 200W total dissipation
+
+Natural convection:
+  Heatsink volume ≈ 1000 cm³ (very large, ~10×10×10 cm)
+
+Forced air (1-2 m/s airflow):
+  Heatsink volume ≈ 200 cm³ (5×8×5 cm)
+  Fan: 40-60mm, 12VDC, ~1-2W
+
+Liquid cooling (water, 1 L/min):
+  Cold plate area ≈ 100 cm²
+  Much more compact
+```
+
+**Thermal Interface Material (TIM) Selection:**
+
+| Material | Rth_CS (mm²/W) | Cost | Notes |
+|----------|----------------|------|-------|
+| Dry (no TIM) | 1-5 | Free | Poor, only for testing |
+| Thermal grease | 0.2-0.5 | $ | Good, common, can dry out |
+| Thermal pad | 0.5-1.5 | $$ | Easy to apply, consistent |
+| Phase change | 0.2-0.4 | $$$ | Excellent, one-time application |
+| Solder/Brazing | 0.05-0.1 | $$$$ | Best, permanent, high reliability |
+
+**Application Guidelines:**
+- **Grease**: Thin layer (25-50 μm), spread evenly, torque to spec
+- **Pads**: Pre-cut to size, moderate pressure
+- **Phase Change**: Melts at ~50-60°C, fills gaps
+- **Solder**: For automotive/aerospace, requires special process
+
+### 7.4 Air Cooling vs Liquid Cooling
+
+**Air Cooling Design:**
+
+```
+Required Airflow Calculation:
+
+CFM = (P_total × 3.16) / (ΔT)
+
+Where:
+  P_total = Total power dissipation (W)
+  ΔT = Allowed temperature rise (°C)
+  CFM = Cubic feet per minute airflow
+
+Example:
+  P_total = 1000W
+  ΔT = 30°C (ambient 40°C → 70°C exhaust)
+  CFM = (1000 × 3.16) / 30 = 105 CFM
+
+  Requires: 120mm fan at ~3000 RPM
+```
+
+**Fan Selection:**
+
+| Size | Typical Airflow | Power | Noise | Use Case |
+|------|-----------------|-------|-------|----------|
+| 40mm | 5-15 CFM | 1-2W | High | Low power (<200W) |
+| 60mm | 10-25 CFM | 1-3W | Moderate | Medium power (200-500W) |
+| 80mm | 20-50 CFM | 2-5W | Moderate | Medium power (500-1000W) |
+| 120mm | 40-100 CFM | 3-8W | Low | High power (>1000W) |
+
+**Airflow Best Practices:**
+- Direct airflow across heatsink fins
+- Use ducting to channel air (improves effectiveness by 30-50%)
+- Avoid recirculation (hot air intake)
+- Filter air in dusty environments
+- Monitor fan speed (detect failures)
+
+**Liquid Cooling Design:**
+
+```
+Coolant Flow Rate:
+
+Q (L/min) = P_total / (ρ × Cp × ΔT × 1000)
+
+Where:
+  P_total = Power dissipation (W)
+  ρ = Coolant density (kg/L) ≈ 1 for water
+  Cp = Specific heat (J/kg·K) ≈ 4180 for water
+  ΔT = Coolant temperature rise (°C)
+
+Example:
+  P_total = 5000W
+  ΔT = 10°C rise
+  Q = 5000 / (1 × 4180 × 10) = 0.12 L/min
+
+  Very small flow rate! Liquid cooling is very effective.
+```
+
+**Liquid Cooling Components:**
+
+1. **Cold Plate**:
+   - Aluminum or copper
+   - Microchannel or pin-fin design
+   - Direct MOSFET mounting
+   - Typical Rth: 0.01-0.05 °C/W per device
+
+2. **Pump**:
+   - Brushless DC (BLDC) for reliability
+   - Flow rate: 1-5 L/min typical
+   - Pressure: 0.5-2 bar
+   - Power: 10-50W
+
+3. **Radiator**:
+   - Air-to-liquid heat exchanger
+   - With fan (like automotive radiator)
+   - Size based on total heat rejection
+
+4. **Coolant**:
+   - Water/glycol mix (50/50) for automotive
+   - Corrosion inhibitors essential
+   - Operating range: -40°C to +120°C
+
+**When to Use Each:**
+
+| Cooling Method | Power Range | Pros | Cons |
+|----------------|-------------|------|------|
+| Natural convection | <100W | Silent, reliable | Large size |
+| Forced air | 100W - 2kW | Simple, low cost | Dust, noise |
+| Liquid cooling | >2kW | Compact, excellent performance | Complex, cost |
+| Hybrid (liquid + air) | >5kW | Best performance | Most complex |
+
+### 7.5 Thermal Simulation and Testing
+
+**Thermal Simulation Tools:**
+
+1. **ANSYS Icepak**:
+   - CFD for electronics cooling
+   - Accurate but expensive and complex
+
+2. **SolidWorks Flow Simulation**:
+   - Integrated with CAD
+   - Good for mechanical engineers
+
+3. **MATLAB Simscape**:
+   - System-level thermal modeling
+   - Fast, good for early design
+
+4. **FloTHERM** (Mentor Graphics):
+   - Industry standard for electronics
+   - Component libraries
+
+**Thermal Testing:**
+
+**1. Thermocouple Measurements:**
+
+```
+Placement:
+  - MOSFET case (under each device)
+  - Heatsink surface (multiple points)
+  - Air inlet and outlet
+  - Ambient reference
+
+Type K thermocouples: -40 to +200°C, ±2°C accuracy
+```
+
+**2. Thermal Camera (Infrared):**
+
+```
+Advantages:
+  - See hotspots instantly
+  - Non-contact measurement
+  - Full board thermal map
+
+Limitations:
+  - Surface temperature only (not junction)
+  - Emissivity calibration needed
+  - Expensive ($2k-$20k)
+```
+
+**3. Junction Temperature Estimation:**
+
+```
+Method 1: TSEP (Temperature Sensitive Electrical Parameter)
+
+Measure VDS_on at known current:
+  VDS_on = ID × RDS_on(Tj)
+
+Since RDS_on(Tj) has known temp coefficient:
+  Tj = (RDS_on_measured / RDS_on_25C - 1) / TC + 25°C
+
+Where TC = temperature coefficient (e.g., 0.5%/°C = 0.005/°C)
+
+Method 2: Built-in temp diode (if available)
+
+Some MOSFETs/modules have integrated temp sensors
+```
+
+**4. Thermal Cycling Test:**
+
+```
+Purpose: Accelerated life testing
+
+Procedure:
+  1. Cycle between Tj_min and Tj_max (e.g., 25°C to 150°C)
+  2. Typical cycle: 30 min hot, 30 min cold
+  3. Run 1000-10000 cycles
+  4. Inspect solder joints, TIM, package integrity
+
+Failure modes:
+  - Solder joint cracking
+  - Wire bond lifting
+  - Package delamination
+  - TIM degradation
+```
+
+**Thermal Management Checklist:**
+
+✓ Calculate all power losses accurately
+✓ Determine required heatsink thermal resistance
+✓ Select appropriate cooling method (air vs liquid)
+✓ Choose TIM and apply correctly
+✓ Verify with thermal testing (thermocouples, IR camera)
+✓ Monitor temperatures during operation
+✓ Implement thermal shutdown protection
+✓ Consider worst-case ambient conditions
+✓ Design for target junction temperature (125°C max for long life)
+✓ Test thermal cycling for reliability
+
+---
+
+### References for Section 7:
+
+**Books:**
+1. *"Thermal Design of Electronic Equipment"* by Ralph Remsburg
+2. *"Cooling Techniques for Electronic Equipment"* by Dave S. Steinberg
+3. *"Heat Sinks: Geometry, Materials, Assembly and Cost"* by Sergey Anatolyevitch Kuzmin
+
+**Application Notes:**
+1. **Infineon**: "Thermal Management in Motor Drives" (Application Note AN2016-08)
+2. **Texas Instruments**: "Thermal Design Guidelines" (SLVA462)
+3. **ON Semiconductor**: "Heatsink Characteristics and Selection" (AND8181/D)
+4. **Infineon**: "Thermal Resistance Theory and Practice" (Application Note AN2015-10)
+5. **Aavid Thermalloy**: "Heat Sink Selection Guide"
+
+**Articles and Papers:**
+1. "Thermal Management of Power Electronics for Electric Vehicles" - IEEE VPPC Conference
+2. "Advanced Cooling Technologies for Automotive Power Electronics" - SAE International
+3. "Junction Temperature Measurement Methods in Power Semiconductors" - PCIM Europe
+
+**Videos:**
+1. **EEVblog**: "Heatsink Selection and Thermal Management" (YouTube)
+2. **Texas Instruments**: "Thermal Design for Power Modules" (YouTube)
+3. **Infineon**: "How to Measure Junction Temperature" (YouTube)
+
+**Standards:**
+1. **JESD51**: JEDEC Thermal Measurement Standards
+2. **IPC-2221**: PCB Thermal Management Guidelines
+
+**Suppliers/Tools:**
+1. **Heatsink manufacturers**: Aavid Thermalloy, Fischer Elektronik, Wakefield-Vette
+2. **TIM suppliers**: Bergquist, Laird Technologies, Henkel
+3. **Thermal cameras**: FLIR, Seek Thermal, Fluke
+
+---
+
