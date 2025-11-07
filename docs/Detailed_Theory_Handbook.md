@@ -4002,6 +4002,386 @@ SVPWM advantage = 0.577/(0.5) = 1.15 = 15% more voltage
 - Better suited for digital implementation
 - Optimal switching sequence (fewer transitions)
 
+#### 5.4.4 Overmodulation and Voltage Limits
+
+When the requested voltage exceeds the inscribed circle, the system enters **overmodulation**.
+
+**Linear Region (m ≤ 0.907):**
+```
+m = |V*| / (Vdc/√3)
+
+For m ≤ 0.907:
+  - Voltage vector stays within inscribed circle
+  - Perfect sinusoidal output (low THD)
+  - Typical FOC operating region
+```
+
+**Overmodulation Region I (0.907 < m < 0.952):**
+```
+Voltage vector reaches hexagon boundaries
+- Output becomes slightly distorted
+- Still maintains fundamental frequency
+- Can extract more voltage but at cost of harmonics
+- Useful for field weakening at high speeds
+```
+
+**Overmodulation Region II (0.952 < m < 1):**
+```
+Severe distortion begins
+- Significant 5th and 7th harmonics
+- Lower-order harmonics appear
+- Typically avoided in FOC
+```
+
+**Six-Step Mode (m = 1):**
+```
+Maximum voltage but square wave output
+- |V_fundamental| = 2Vdc/π = 0.637·Vdc (10% more than SVPWM circle)
+- Very high harmonic content
+- Not suitable for FOC
+- Used in low-cost BLDC drives only
+```
+
+**Practical Voltage Limiting:**
+
+```c
+// Calculate magnitude
+float V_mag = sqrtf(Vd*Vd + Vq*Vq);
+float V_max_linear = Vdc / 1.732f;  // Linear region limit
+
+if (V_mag > V_max_linear) {
+    // Scale back to linear region
+    float scale = V_max_linear / V_mag;
+    Vd *= scale;
+    Vq *= scale;
+
+    // Option: Allow slight overmodulation (5% over)
+    // scale = (V_max_linear * 1.05) / V_mag;
+}
+```
+
+#### 5.4.5 Deadtime and Its Compensation
+
+**Deadtime Problem:**
+
+Real MOSFETs/IGBTs cannot switch instantaneously. A small delay (deadtime) is added between turning off one switch and turning on its complement to prevent shoot-through.
+
+```
+Typical deadtime: 1-3 μs
+At fsw = 10 kHz, PWM period = 100 μs
+Deadtime = 1-3% of PWM period
+```
+
+**Effect on Voltage:**
+
+```
+Deadtime causes voltage error:
+  ΔV = Vdc × (Td/Tpwm) × sign(I_phase)
+
+Where:
+  Td = deadtime
+  sign(I_phase) = direction of current
+
+At low speeds (low duty cycles):
+  Voltage error is LARGE relative to commanded voltage
+  Can be 10-30% error!
+
+Result:
+  - Distorted currents
+  - Torque ripple
+  - Lower efficiency
+  - Especially problematic at low speeds
+```
+
+**Deadtime Compensation Strategies:**
+
+**1. Feedforward Compensation (Open Loop):**
+
+```c
+// Measure actual deadtime and diode forward drop
+float Td = 2.0e-6;  // 2 μs
+float Vf = 1.0;     // Diode voltage drop
+
+// Voltage error per phase
+float V_error_a = (I_a > 0) ? (Vdc * Td/Ts + Vf) : -(Vdc * Td/Ts + Vf);
+float V_error_b = (I_b > 0) ? (Vdc * Td/Ts + Vf) : -(Vdc * Td/Ts + Vf);
+float V_error_c = (I_c > 0) ? (Vdc * Td/Ts + Vf) : -(Vdc * Td/Ts + Vf);
+
+// Add compensation
+V_a_comp = V_a_cmd + V_error_a;
+V_b_comp = V_b_cmd + V_error_b;
+V_c_comp = V_c_cmd + V_error_c;
+```
+
+**2. Feedback Compensation (Closed Loop):**
+
+```
+Use high-bandwidth current controller to automatically compensate
+- PI controller naturally compensates for DC offset
+- Works well if current loop bandwidth >> electrical frequency
+
+Limitation:
+  - Only works for DC component of error
+  - Doesn't compensate for harmonic distortion
+```
+
+**3. Advanced: Current Polarity Detection:**
+
+```c
+// More accurate: consider current magnitude and switching state
+float compensate_deadtime(float V_cmd, float I_phase, float Vdc, float Td, float Ts) {
+    float V_error;
+
+    if (fabs(I_phase) < 0.5) {  // Near zero crossing
+        // Current unclear, use reduced compensation
+        V_error = 0.5 * Vdc * Td/Ts * sign(I_phase);
+    } else {
+        // Clear current direction
+        V_error = Vdc * Td/Ts * sign(I_phase);
+    }
+
+    return V_cmd + V_error;
+}
+```
+
+#### 5.4.6 Discontinuous PWM (DPWM)
+
+**Standard SVPWM:**
+- All three phases switch every PWM cycle
+- 6 switching events per cycle (3 phases × 2 edges)
+
+**Discontinuous PWM:**
+- Clamp one phase to rail for 60° or 120°
+- Reduces switching losses by 33%
+- Used at high speeds where efficiency critical
+
+**DPWM Types:**
+
+**DPWM1 (60° clamping):**
+```
+Clamp phase with highest |current| to appropriate rail
+- Sector 1 (0-60°): Clamp phase C to negative rail
+- Sector 2 (60-120°): Clamp phase A to positive rail
+- Pattern continues...
+
+Advantage: 33% reduction in switching loss
+Disadvantage: Slightly higher current ripple
+```
+
+**DPWM2 (120° clamping):**
+```
+Clamp phase with lowest |current|
+- Even lower losses
+- More current ripple
+
+Used for extreme efficiency applications
+```
+
+**Switching Loss Comparison:**
+
+```
+Continuous SVPWM:
+  Switching events = 6 per PWM period
+  Relative loss = 100%
+
+DPWM (60° clamping):
+  Switching events = 4 per PWM period (one phase fixed)
+  Relative loss = 67% (33% reduction)
+
+DPWM (120° clamping):
+  Switching events = 2 per PWM period
+  Relative loss = 33% (67% reduction!)
+
+Trade-off: Current ripple increases
+```
+
+**When to Use DPWM:**
+
+```
+Use continuous SVPWM when:
+  - Low speed (< 50% max speed)
+  - Low switching frequency (< 10 kHz)
+  - Current ripple must be minimized
+
+Use DPWM when:
+  - High speed (> 50% max speed)
+  - High switching frequency (> 15 kHz)
+  - Thermal management is critical
+  - Efficiency is paramount (EVs at highway speed)
+```
+
+**Implementation:**
+
+```c
+void DPWM1_Calculate(float V_alpha, float V_beta, float Vdc,
+                     float I_a, float I_b, float I_c,
+                     float *Ta, float *Tb, float *Tc) {
+
+    // First calculate standard SVPWM duties
+    SVPWM_Calculate(V_alpha, V_beta, Vdc, Ta, Tb, Tc);
+
+    // Determine which phase has highest absolute current
+    float I_max = fmax(fabs(I_a), fmax(fabs(I_b), fabs(I_c)));
+
+    if (fabs(I_a) == I_max) {
+        // Clamp phase A
+        if (I_a > 0) {
+            // High side on, low side off
+            *Ta = 1.0;
+            // Adjust others to maintain voltage
+            *Tb = *Tb - (1.0 - *Ta)/2;
+            *Tc = *Tc - (1.0 - *Ta)/2;
+        } else {
+            *Ta = 0.0;
+            *Tb = *Tb + (0.0 - *Ta)/2;
+            *Tc = *Tc + (0.0 - *Ta)/2;
+        }
+    }
+    // Similar for phases B and C...
+}
+```
+
+#### 5.4.7 Current Reconstruction from DC Bus
+
+**Single Shunt Current Sensing:**
+
+Measuring all three phase currents requires expensive current sensors. Alternative: measure DC bus current only.
+
+**Principle:**
+
+```
+At any instant, DC bus current = sum of conducting phase currents
+
+Different switch states → different current measurable
+
+Example:
+  State V1 (100): Upper A on, Upper B/C off
+  → Idc = +Ia  (can measure Ia)
+
+  State V2 (110): Upper A/B on, Upper C off
+  → Idc = +Ia + Ib = -Ic  (can measure Ic)
+```
+
+**Reconstruction Algorithm:**
+
+```c
+// Measure Idc during active vector times
+// For sector 1:
+float I_dc_V1 = ADC_Read_AtVector(V1);  // Measures during V1 application
+float I_dc_V2 = ADC_Read_AtVector(V2);  // Measures during V2 application
+
+// Reconstruct phase currents
+float Ia = I_dc_V1;
+float Ic = -I_dc_V2;
+float Ib = -(Ia + Ic);
+
+// Problem: At very low or very high duty cycles, active vector time too short!
+if (T1 < T_min_sample || T2 < T_min_sample) {
+    // Cannot reconstruct
+    // Solution: Modify PWM pattern or use last known values
+}
+```
+
+**Unmeasurable Regions:**
+
+```
+Problem occurs when:
+  - Duty cycle too low (<5%): Active vector time too short
+  - Duty cycle too high (>95%): Active vector time too short
+  - Vector near sector boundary: Both active vectors short
+
+Solution: Active Vector Shifting
+  Temporarily modify PWM to extend active vector time
+  Trade-off: Slightly higher ripple during measurement
+```
+
+**Advantages of Single Shunt:**
+- Low cost (one sensor vs three)
+- No sensor matching issues
+- No offset drift between phases
+
+**Disadvantages:**
+- Complex algorithm
+- Unmeasurable regions
+- ADC timing critical (μs precision)
+- Not suitable for low switching frequencies
+
+#### 5.4.8 Practical SVPWM Implementation Checklist
+
+**1. Choose PWM Frequency:**
+```
+Low frequency (5-8 kHz):
+  + Lower switching losses
+  + Simpler control timing
+  - Higher acoustic noise
+  - Higher current ripple
+
+High frequency (15-20 kHz):
+  + Silent operation (>20 kHz = ultrasonic)
+  + Lower current ripple
+  - Higher switching losses
+  - EMI challenges
+
+Typical: 10-12 kHz for most applications
+```
+
+**2. Configure Timer for Center-Aligned PWM:**
+```c
+// STM32 example
+TIM1->CR1 |= TIM_CR1_CMS_0;  // Center-aligned mode 1
+TIM1->ARR = (SystemCoreClock / PWM_FREQ) / 2;  // Auto-reload value
+TIM1->CCR1 = duty_a * TIM1->ARR;  // Compare value for phase A
+// Enable complementary outputs with deadtime
+TIM1->BDTR |= deadtime_value;
+```
+
+**3. Synchronize ADC Sampling:**
+```
+Sample at PWM valley (center)
+  - Minimum current ripple
+  - Both high and low side MOSFETs conducting
+  - Most accurate measurement
+
+Trigger ADC from timer
+  - Use timer update event
+  - Or compare event at center
+```
+
+**4. Handle Saturation Gracefully:**
+```c
+// Don't let duties exceed [0, 1]
+duty_a = fmaxf(0.0f, fminf(1.0f, duty_a));
+duty_b = fmaxf(0.0f, fminf(1.0f, duty_b));
+duty_c = fmaxf(0.0f, fminf(1.0f, duty_c));
+
+// Ensure minimum pulse width for reliable switching
+float min_duty = deadtime / PWM_period;
+if (duty_a < min_duty) duty_a = 0.0f;  // Turn off completely if too narrow
+```
+
+**5. Implement Software Safety Limits:**
+```c
+#define MAX_MODULATION_INDEX 0.95  // Stay below overmodulation
+
+float m = sqrtf(V_alpha*V_alpha + V_beta*V_beta) / (Vdc/1.732f);
+if (m > MAX_MODULATION_INDEX) {
+    float scale = MAX_MODULATION_INDEX / m;
+    V_alpha *= scale;
+    V_beta *= scale;
+}
+```
+
+**6. Optimize Computation:**
+```
+- Pre-calculate sector lookup tables
+- Use fast atan2 approximations
+- Avoid divisions (pre-compute reciprocals)
+- Use hardware FPU if available
+
+Execution time target: < 10% of PWM period
+  At 10 kHz PWM: < 10 μs computation time
+```
+
 ### 5.5 Implementation Considerations
 
 #### 5.5.1 Computational Efficiency
