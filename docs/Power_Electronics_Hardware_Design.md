@@ -3878,3 +3878,389 @@ Cost range:
 
 ---
 
+## 10. Testing and Validation
+
+Thorough testing is essential to verify motor controller performance, identify issues early, and ensure reliability before production.
+
+### 10.1 Motor Controller Test Setup
+
+**Basic Test Bench Components:**
+
+```
+1. Power Supply:
+   - Programmable DC power supply
+   - Voltage range: 0-500V (for 400V system)
+   - Current capability: 1.5× motor rated current
+   - With current limiting and OVP
+
+2. Motor Load:
+   - Dynamometer (best, expensive)
+   - Another motor as generator (cheaper)
+   - DC generator with resistive load
+   - Or unloaded motor (initial testing only)
+
+3. Measurement Equipment:
+   - Oscilloscope (4 channels minimum, 200+ MHz)
+   - Current probes (AC/DC, 100+ A rating)
+   - Differential voltage probes (1000V rating)
+   - Multimeters (true RMS)
+   - Thermal camera or thermocouples
+
+4. Safety Equipment:
+   - Emergency stop button
+   - Current-limiting fuses
+   - Isolation transformer (if using mains)
+   - Safety interlocks on enclosure
+   - PPE (insulated gloves, face shield)
+
+5. Control Interface:
+   - PC with control software
+   - CAN/UART/Ethernet interface
+   - Debug probe (JTAG/SWD)
+   - Real-time data logging
+```
+
+**Test Bench Setup:**
+
+```
+Safety considerations:
+  ✓ All high-voltage exposed conductors insulated or guarded
+  ✓ Emergency stop within reach
+  ✓ Current limiting set on power supply
+  ✓ Motor mechanically secured (can't run away)
+  ✓ Adequate ventilation/cooling
+  ✓ Fire extinguisher nearby
+  ✓ Only qualified personnel
+  ✓ One-hand rule (keep one hand in pocket when probing)
+```
+
+### 10.2 Oscilloscope Measurements
+
+**Critical Waveforms to Capture:**
+
+1. **Gate Drive Signals**:
+   ```
+   What to check:
+   - VGS amplitude (should be 12-18V)
+   - Rise/fall times (20-200 ns typical)
+   - Overshoot (<10% of VGS)
+   - Deadtime between high/low side (0.5-2 μs)
+   - No ringing or oscillation
+
+   Setup:
+   - Probe: 10:1 passive or active probe
+   - Bandwidth: 200 MHz minimum
+   - Probe ground: Use probe tip ground spring (not long lead!)
+   ```
+
+2. **Drain-Source Voltage (VDS)**:
+   ```
+   What to check:
+   - Switching waveform shape
+   - Voltage overshoot (<20% of VDC)
+   - Ringing frequency and damping
+   - dv/dt (V/ns)
+   - ON-state voltage drop
+
+   Setup:
+   - Probe: Differential probe (1000V rating)
+   - Bandwidth: 200+ MHz
+   - NEVER use scope ground clip at high voltage!
+   ```
+
+3. **Phase Current**:
+   ```
+   What to check:
+   - Sinusoidal shape (should be clean sine wave)
+   - Current ripple (<20% peak-peak)
+   - No DC offset (indicates controller issue)
+   - Balanced between phases
+
+   Setup:
+   - Current probe: AC/DC Hall effect or Rogowski
+   - Bandwidth: 100 kHz minimum (to see PWM ripple)
+   - Couple to oscilloscope via BNC
+   ```
+
+4. **DC Bus Voltage and Current**:
+   ```
+   What to check:
+   - Ripple voltage (<5% of VDC nominal)
+   - Current waveform (rectified sine wave shape)
+   - Power factor (if AC input)
+   - No unexpected spikes or dips
+
+   Setup:
+   - Voltage: Differential probe
+   - Current: DC current probe or shunt + diff probe
+   ```
+
+**Oscilloscope Triggering Tips:**
+
+```
+For switching waveforms:
+  - Trigger on gate signal (most stable)
+  - Use edge trigger with proper level
+  - AC coupling for noisy signals
+  - Use holdoff to capture specific events
+
+For motor phase currents:
+  - Trigger on one phase crossing zero
+  - Use normal or auto mode
+  - Sufficient memory depth to capture multiple cycles
+```
+
+### 10.3 Key Parameters to Monitor
+
+**Performance Metrics:**
+
+```
+1. Efficiency:
+   η = P_out / P_in × 100%
+
+   Where:
+     P_in = VDC × IDC (measured at DC bus)
+     P_out = Torque × Speed (measured at motor shaft)
+     or P_out = √3 × VLL × IL × cos(φ) (electrical method)
+
+   Target: >95% at rated load for high-performance drives
+
+2. Torque Ripple:
+   Ripple = (T_max - T_min) / T_avg × 100%
+
+   Target: <5% for smooth operation
+   <2% for high-performance servo
+
+3. Current THD (Total Harmonic Distortion):
+   THD = √(I₂² + I₃² + ... + Iₙ²) / I₁ × 100%
+
+   Target: <5% THD for good sinusoidal current
+
+4. Power Factor:
+   PF = P_real / (V_rms × I_rms)
+
+   Target: >0.95 for efficient operation
+```
+
+**Thermal Monitoring:**
+
+```
+Critical temperature points:
+  1. MOSFET junction (estimate or measure with Rth method)
+  2. Heatsink temperature (thermocouple)
+  3. DC link capacitors (case temperature)
+  4. Current sense resistors
+  5. Ambient air (inlet and exhaust)
+
+Acceptable limits:
+  - MOSFET junction: <125°C continuous, <150°C peak
+  - Heatsink: <85°C (comfortable to touch briefly)
+  - Capacitors: <85°C (per datasheet rating)
+  - Ambient: Design for worst-case (e.g., 65°C under hood)
+```
+
+**Control Loop Performance:**
+
+```
+Test using step response:
+
+1. Speed Step Response:
+   - Apply step change in speed reference
+   - Measure: Rise time, overshoot, settling time
+   - Typical: tr < 200ms, overshoot < 5%, ts < 300ms
+
+2. Torque Step Response:
+   - Apply sudden load change
+   - Measure speed droop and recovery time
+   - Typical: Speed droop <5%, recovery < 100ms
+
+3. Current Loop Bandwidth:
+   - Inject frequency sweep into current reference
+   - Measure -3dB bandwidth
+   - Target: 1-5 kHz for PMSM FOC
+```
+
+### 10.4 Failure Modes and Troubleshooting
+
+**Common Failure Modes:**
+
+```
+1. Shoot-Through (Catastrophic):
+   Symptom: Loud bang, smoke, blown MOSFETs, blown fuse
+   Cause: Both MOSFETs in same leg ON simultaneously
+   Debug:
+     - Check deadtime in code (should be 1-2 μs)
+     - Verify gate driver propagation delay matching
+     - Check for false turn-on (dv/dt coupling)
+   Prevention: Adequate deadtime, negative VGS_off
+
+2. Overvoltage (Can be catastrophic):
+   Symptom: MOSFETs fail, voltage spikes on scope
+   Cause: Excessive regen, poor DC link capacitance, long cables
+   Debug:
+     - Measure DC bus voltage during braking
+     - Check loop inductance (should be <100 nH)
+   Prevention: Braking resistor, active voltage limit, larger caps
+
+3. Overcurrent (Can be catastrophic):
+   Symptom: MOSFETs overheat or fail, current limit trips
+   Cause: Shorted motor phase, control instability, startup surge
+   Debug:
+     - Measure phase currents with scope
+     - Check current sensor calibration
+     - Verify current limit threshold
+   Prevention: Hardware current limit, proper startup ramp
+
+4. Thermal Runaway:
+   Symptom: MOSFETs progressively heat up, eventually fail
+   Cause: Inadequate cooling, excessive losses, hot environment
+   Debug:
+     - Thermal camera or thermocouples
+     - Calculate power dissipation vs. cooling capacity
+   Prevention: Better heatsink, lower switching frequency, SiC MOSFETs
+
+5. Control Instability:
+   Symptom: Motor vibrates, makes noise, current oscillates
+   Cause: PI gains too high, current sensor noise, timing issues
+   Debug:
+     - Reduce PI gains gradually
+     - Check current sensor signals for noise
+     - Verify PWM timing and ADC synchronization
+   Prevention: Proper tuning, good layout, filtering
+
+6. Ground Bounce / Noise:
+   Symptom: False triggering, erratic behavior, EMI issues
+   Cause: Poor grounding, high di/dt in ground traces
+   Debug:
+     - Scope ground currents and voltages
+     - Check for ground loops
+   Prevention: Star grounding, low-inductance layout
+```
+
+**Troubleshooting Decision Tree:**
+
+```
+Motor doesn't run:
+  → Check gate signals present? (Scope)
+    → No: Check MCU code, enable signals
+    → Yes: Check phase currents present?
+      → No: Check power supply, fuses, connections
+      → Yes: Check position sensor working?
+        → No: Debug Hall/encoder interface
+        → Yes: Check FOC algorithm (transforms, PI tuning)
+
+Motor runs but unstable:
+  → Check current waveforms
+    → Noisy/distorted: Check current sensors, ADC timing
+    → Clean but oscillating: Reduce PI gains
+    → DC offset: Calibrate current sensors
+
+MOSFETs overheat:
+  → Measure switching waveforms
+    → Excessive ringing: Add snubbers, reduce layout inductance
+    → Slow switching: Check gate drive strength, Rg value
+    → Normal switching: Need better cooling or lower frequency
+```
+
+### 10.5 Reliability Testing
+
+**Accelerated Life Testing:**
+
+```
+1. Thermal Cycling:
+   Purpose: Simulate years of thermal stress
+   Method:
+     - Cycle between Tj_min and Tj_max
+     - Typical: -40°C to +125°C
+     - Ramp rate: 5-10°C/minute
+     - Dwell time: 15-30 minutes at each extreme
+     - Cycles: 500-5000 depending on target life
+
+   Failure modes to check:
+     - Solder joint cracking
+     - Wire bond lifting
+     - Package delamination
+     - Capacitor degradation
+
+2. Power Cycling:
+   Purpose: Test bond wire and solder fatigue
+   Method:
+     - Run motor at rated power until hot (Tj ~150°C)
+     - Stop and let cool to ambient
+     - Repeat 10,000-100,000 cycles
+
+   Monitor:
+     - RDS_on increase (indicates bond wire damage)
+     - Thermal impedance increase
+     - Vf increase (if using IGBTs)
+
+3. High-Temperature Operating Life (HTOL):
+   Purpose: Accelerate chemical degradation
+   Method:
+     - Run continuously at elevated temperature
+     - Typical: Tj = 150°C for 1000+ hours
+     - At rated current or voltage stress
+
+   Arrhenius acceleration factor:
+     AF = exp[(Ea/k) × (1/T_use - 1/T_test)]
+     Where Ea ≈ 0.7 eV for semiconductors
+
+4. Vibration Testing:
+   Purpose: Simulate automotive/industrial vibration
+   Method:
+     - Random vibration per IEC 60068-2-64
+     - Automotive: 10-20 G RMS
+     - Frequency: 10-2000 Hz
+     - Duration: 2-24 hours per axis
+
+   Check for:
+     - Solder joint cracks
+     - Connector loosening
+     - Component detachment
+     - Enclosure resonance
+```
+
+**Acceptance Testing for Production:**
+
+```
+100% of units should pass:
+  ✓ Visual inspection (soldering, assembly)
+  ✓ Hi-pot test (isolation >1000V)
+  ✓ Functional test (motor runs, basic operation)
+  ✓ Protection test (overcurrent trips correctly)
+  ✓ Thermal test (no excessive heating at rated power)
+  ✓ Final QC inspection
+
+Sample testing (per lot):
+  ✓ Full performance characterization
+  ✓ Efficiency measurement
+  ✓ EMI pre-scan
+  ✓ Thermal imaging
+```
+
+---
+
+### References for Section 10:
+
+**Books:**
+1. *"Testing of Electronic Systems"* by Hans-Joachim Wunderlich
+2. *"Reliability Physics and Engineering"* by Dr. Joseph B. Bernstein
+3. *"Accelerated Testing and Validation"* by Alexander Porter
+
+**Standards:**
+1. **IEC 60068**: Environmental testing (temperature, humidity, vibration)
+2. **MIL-STD-810**: Military environmental test methods
+3. **AEC-Q100/Q200**: Automotive component qualification
+
+**Application Notes:**
+1. **Infineon**: "Power Cycling Test Methods" (AN2015-09)
+2. **Texas Instruments**: "Motor Drive Testing and Characterization" (SLVA947)
+3. **Keysight**: "Making Accurate Power Measurements on Motor Drives"
+
+**Videos:**
+1. **Tektronix**: "How to Test Motor Drives" (YouTube series)
+2. **Keysight**: "Power Electronics Measurement Techniques" (YouTube)
+3. **Rohde & Schwarz**: "Oscilloscope Basics for Power Electronics" (YouTube)
+
+---
+
