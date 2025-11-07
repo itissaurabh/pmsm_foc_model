@@ -3950,5 +3950,610 @@ end
 
 ---
 
-*To be continued in Section 6.6: Field Weakening and High-Speed Operation*
+### 6.6 Field Weakening and High-Speed Operation
+
+#### 6.6.1 The Voltage Constraint Problem
+
+As motor speed increases, the back-EMF increases proportionally:
+
+```
+E = ωe·λm  (back-EMF voltage)
+```
+
+At some speed, called the **base speed**, the required voltage reaches the inverter's maximum capability:
+
+```
+√(Vd² + Vq²) ≤ V_max = Vdc/√3
+```
+
+**Below base speed:**
+- Voltage limit is not reached
+- id=0 control works perfectly
+- Motor operates in constant torque region
+
+**Above base speed:**
+- Voltage limit is reached
+- Cannot maintain id=0 and full torque
+- Must trade off torque for speed
+- Motor operates in constant power region
+
+#### 6.6.2 Field Weakening Concept
+
+The solution is to inject **negative d-axis current** (id < 0) to reduce the effective magnetic flux:
+
+**Effect of negative id:**
+
+```
+Total flux = λm + Ld·id
+
+With id < 0:
+  Total flux decreases → Back-EMF decreases → Can run faster
+```
+
+**Physical interpretation:**
+- Permanent magnet flux cannot be changed
+- But we can create opposing flux with stator current
+- This "weakens" the effective field
+- Trade-off: Reduces available torque but extends speed range
+
+**Torque with field weakening:**
+
+For SPMSM (Ld ≈ Lq):
+```
+τ = (3/2)·P·λm·iq
+
+For IPMSM (Ld < Lq):
+τ = (3/2)·P·[λm·iq + (Ld - Lq)·id·iq]
+    └─ PM torque     └─ Reluctance torque
+
+With id < 0 and Ld < Lq:
+  Reluctance torque is negative (opposes PM torque)
+  But for IPMSMs this can still increase speed range significantly
+```
+
+#### 6.6.3 Field Weakening Control Strategy
+
+**Basic strategy:**
+
+1. **Below base speed:** Use id=0 control
+2. **At base speed:** Voltage limit is reached
+3. **Above base speed:** Inject negative id to reduce flux
+
+**Implementation:**
+
+```matlab
+% Calculate voltage magnitude
+V_measured = sqrt(Vd^2 + Vq^2)
+V_max = Vdc / sqrt(3)
+
+% Field weakening PI controller
+error_voltage = V_max - V_measured
+
+if omega > omega_base
+    % Activate field weakening
+    id_ref = FW_PI(error_voltage)
+    id_ref = min(id_ref, 0)  % Only negative id
+else
+    % Below base speed
+    id_ref = 0
+end
+```
+
+**Alternative: Voltage-based method**
+
+More sophisticated approach uses voltage constraints directly:
+
+```matlab
+% Current constraint (circular)
+id² + iq² ≤ I_max²
+
+% Voltage constraint (elliptical)
+(Rs·id - ωe·Lq·iq)² + (Rs·iq + ωe·Ld·id + ωe·λm)² ≤ V_max²
+
+% At high speed (Rs·iq << ωe·Ld·id):
+(ωe·Lq·iq)² + (ωe·Ld·id + ωe·λm)² ≈ V_max²
+
+% Simplified voltage ellipse:
+(Lq·iq)² + (Ld·id + λm)² ≤ (V_max/ωe)²
+```
+
+#### 6.6.4 MTPA with Field Weakening Regions
+
+Complete control strategy for IPMSMs:
+
+**Region 1: MTPA (Low speed)**
+```
+Constraint: id² + iq² ≤ I_max²
+Objective: Maximize torque per ampere
+
+For SPMSM: id = 0
+For IPMSM: id = [λm - √(λm² + 8(Lq-Ld)²·iq²)] / [4(Lq-Ld)]
+```
+
+**Region 2: MTPV (Medium speed)**
+```
+Constraint: Voltage limit becoming active
+Objective: Maximum Torque Per Volt
+```
+
+**Region 3: Field Weakening (High speed)**
+```
+Constraint: Both current and voltage limits
+Objective: Maximize speed while staying within limits
+```
+
+**Transition diagram:**
+
+```
+Torque
+  ↑
+  │╲
+  │ ╲  Region 1: MTPA
+  │  ╲  (constant torque)
+  │   ╲
+  │    ╲______
+  │           ╲____  Region 2: MTPV
+  │                ╲____
+  │                     ╲____  Region 3: Field Weakening
+  │                          ╲____ (constant power)
+  └─────────────────────────────────→ Speed
+        ω_base               ω_max
+```
+
+#### 6.6.5 Field Weakening Design Example
+
+**Given motor:**
+```
+λm = 0.1 Wb
+Ld = Lq = 1 mH (SPMSM)
+Rs = 0.5 Ω
+P = 4 pole pairs
+I_max = 10 A
+Vdc = 24 V
+V_max = 24/√3 = 13.86 V
+```
+
+**Step 1: Calculate base speed**
+
+At base speed with id=0, maximum torque:
+```
+iq = I_max = 10 A
+Vq_required = ωe_base·λm + Rs·iq
+13.86 = ωe_base × 0.1 + 0.5 × 10
+ωe_base = (13.86 - 5) / 0.1 = 88.6 rad/s (electrical)
+
+ω_base = ωe_base / P = 88.6 / 4 = 22.15 rad/s (mechanical)
+N_base = ω_base × 60/(2π) = 211 RPM
+```
+
+**Step 2: Operate above base speed**
+
+At 2× base speed (ωe = 177.2 rad/s):
+
+Without field weakening:
+```
+Vq_required = 177.2 × 0.1 + 0.5 × 10 = 22.72 V  ❌ Exceeds 13.86 V!
+```
+
+With field weakening (solve for id):
+```
+Vd = Rs·id - ωe·L·iq
+Vq = Rs·iq + ωe·L·id + ωe·λm
+
+√(Vd² + Vq²) = V_max = 13.86 V
+
+Assuming iq = 8 A (reduced torque), solve for id:
+id ≈ -4.2 A
+
+Check: id² + iq² = 4.2² + 8² = 81.64 < 100 ✓
+
+Torque: τ = (3/2) × 4 × 0.1 × 8 = 4.8 N·m (reduced from 6 N·m at base speed)
+```
+
+#### 6.6.6 Practical Field Weakening Implementation
+
+**Complete MATLAB function:**
+
+```matlab
+function [id_ref, iq_ref] = field_weakening_control(omega_ref, omega_measured, tau_ref)
+    % Motor parameters
+    lambda_m = 0.1;
+    Ld = 0.001;
+    Lq = 0.001;
+    Rs = 0.5;
+    P = 4;
+    I_max = 10;
+    Vdc = 24;
+    V_max = Vdc / sqrt(3);
+
+    % Electrical speed
+    omega_e = omega_measured * P;
+
+    % Base speed (approximate)
+    omega_e_base = (V_max - Rs*I_max) / lambda_m;
+
+    % Calculate iq from torque reference
+    Kt = 1.5 * P * lambda_m;
+    iq_ref = tau_ref / Kt;
+
+    % Field weakening
+    if omega_e > omega_e_base
+        % Estimate required negative id
+        % From voltage constraint: (ωe·Lq·iq)² + (ωe·Ld·id + ωe·λm)² ≤ V_max²
+        % Solve for id:
+        V_margin = V_max - 1;  % 1V safety margin
+
+        % Approximate (neglecting Rs terms):
+        term1 = (omega_e * Lq * iq_ref)^2;
+        term2 = V_margin^2 - term1;
+
+        if term2 > 0
+            id_ref = (sqrt(term2) - omega_e * lambda_m) / (omega_e * Ld);
+            id_ref = max(id_ref, -I_max);  % Limit negative id
+        else
+            % Cannot reach this speed-torque point
+            id_ref = -I_max;
+            % Must reduce iq
+            max_iq = sqrt(V_margin^2 / (omega_e * Lq)^2);
+            iq_ref = min(iq_ref, max_iq);
+        end
+    else
+        % Below base speed
+        id_ref = 0;
+    end
+
+    % Current limit (circular constraint)
+    I_total = sqrt(id_ref^2 + iq_ref^2);
+    if I_total > I_max
+        scale = I_max / I_total;
+        id_ref = id_ref * scale;
+        iq_ref = iq_ref * scale;
+    end
+end
+```
+
+### 6.7 Complete FOC Implementation Algorithm
+
+Now let's put everything together into a complete, real-time FOC algorithm.
+
+#### 6.7.1 Initialization Phase
+
+```c
+// Motor parameters (constant)
+#define RS          0.5f      // Stator resistance (Ω)
+#define LD          0.001f    // d-axis inductance (H)
+#define LQ          0.001f    // q-axis inductance (H)
+#define LAMBDA_M    0.1f      // Flux linkage (Wb)
+#define POLE_PAIRS  4         // Number of pole pairs
+#define J           0.00005f  // Inertia (kg·m²)
+
+// Inverter parameters
+#define VDC         24.0f     // DC bus voltage (V)
+#define V_MAX       (VDC/1.732f)  // Max phase voltage (V)
+#define I_MAX       10.0f     // Max phase current (A)
+#define FSW         10000     // PWM frequency (Hz)
+#define TS          (1.0f/FSW) // Sample time (s)
+
+// Control parameters (tuned)
+#define KP_D        6.28f     // d-axis current Kp
+#define KI_D        3142.0f   // d-axis current Ki
+#define KP_Q        6.28f     // q-axis current Kp
+#define KI_Q        3142.0f   // q-axis current Ki
+#define KP_SPEED    0.0523f   // Speed Kp
+#define KI_SPEED    0.0105f   // Speed Ki
+
+// State variables (initialized to zero)
+float integrator_id = 0.0f;
+float integrator_iq = 0.0f;
+float integrator_speed = 0.0f;
+float theta_e = 0.0f;           // Electrical angle (rad)
+float omega_e = 0.0f;           // Electrical speed (rad/s)
+float omega_m = 0.0f;           // Mechanical speed (rad/s)
+
+// Hall sensor state
+uint8_t hall_state_prev = 0;
+uint32_t hall_time_prev = 0;
+```
+
+#### 6.7.2 Main Control Loop (10 kHz)
+
+```c
+void FOC_MainLoop(void) {
+    // This function is called at PWM frequency (10 kHz)
+
+    // ==========================================
+    // STEP 1: Read Sensors
+    // ==========================================
+
+    // Read phase currents from ADC
+    float ia = ADC_ReadCurrent(ADC_CHANNEL_A);  // Amps
+    float ib = ADC_ReadCurrent(ADC_CHANNEL_B);  // Amps
+    float ic = -(ia + ib);  // Reconstruct (assumes balanced)
+
+    // Read Hall sensors
+    uint8_t hall_a = GPIO_Read(HALL_A_PIN);
+    uint8_t hall_b = GPIO_Read(HALL_B_PIN);
+    uint8_t hall_c = GPIO_Read(HALL_C_PIN);
+    uint8_t hall_state = (hall_a << 2) | (hall_b << 1) | hall_c;
+
+    // Decode Hall state to angle
+    theta_e = Hall_DecodeAngle(hall_state);  // Electrical angle
+
+    // Calculate speed (every 10th cycle to reduce noise)
+    static uint16_t speed_counter = 0;
+    if (++speed_counter >= 10) {
+        speed_counter = 0;
+        omega_m = Speed_Calculate(hall_state, hall_state_prev,
+                                    hall_time_prev, micros());
+        omega_e = omega_m * POLE_PAIRS;
+        hall_state_prev = hall_state;
+        hall_time_prev = micros();
+    }
+
+    // ==========================================
+    // STEP 2: Clarke Transform (abc → αβ)
+    // ==========================================
+
+    float i_alpha = (2.0f/3.0f) * (ia - 0.5f*ib - 0.5f*ic);
+    float i_beta = (2.0f/3.0f) * (0.866f*ib - 0.866f*ic);
+
+    // ==========================================
+    // STEP 3: Park Transform (αβ → dq)
+    // ==========================================
+
+    float cos_theta = arm_cos_f32(theta_e);  // Use CMSIS-DSP
+    float sin_theta = arm_sin_f32(theta_e);
+
+    float id = cos_theta * i_alpha + sin_theta * i_beta;
+    float iq = -sin_theta * i_alpha + cos_theta * i_beta;
+
+    // ==========================================
+    // STEP 4: Speed Controller (1 kHz)
+    // ==========================================
+
+    static float iq_ref = 0.0f;
+    static uint16_t speed_loop_counter = 0;
+
+    if (++speed_loop_counter >= 10) {  // Every 10th cycle
+        speed_loop_counter = 0;
+
+        float omega_ref = GetSpeedReference();  // From user/profile
+        float error_speed = omega_ref - omega_m;
+
+        // Speed PI controller
+        float prop_speed = KP_SPEED * error_speed;
+        integrator_speed += KI_SPEED * 0.001f * error_speed;  // Ts=1ms
+
+        iq_ref = prop_speed + integrator_speed;
+
+        // Limit and anti-windup
+        float iq_ref_limited = CLAMP(iq_ref, -I_MAX, I_MAX);
+        if (iq_ref != iq_ref_limited) {
+            integrator_speed = iq_ref_limited - prop_speed;
+        }
+        iq_ref = iq_ref_limited;
+    }
+
+    float id_ref = 0.0f;  // id=0 control for SPMSM
+
+    // ==========================================
+    // STEP 5: Current Controllers (10 kHz)
+    // ==========================================
+
+    // d-axis PI controller
+    float error_d = id_ref - id;
+    float prop_d = KP_D * error_d;
+    integrator_id += KI_D * TS * error_d;
+    float Vd_PI = prop_d + integrator_id;
+
+    // q-axis PI controller
+    float error_q = iq_ref - iq;
+    float prop_q = KP_Q * error_q;
+    integrator_iq += KI_Q * TS * error_q;
+    float Vq_PI = prop_q + integrator_iq;
+
+    // ==========================================
+    // STEP 6: Feedforward Decoupling
+    // ==========================================
+
+    float Vd_ff = -omega_e * LQ * iq;
+    float Vq_ff = omega_e * LD * id + omega_e * LAMBDA_M;
+
+    float Vd = Vd_PI + Vd_ff;
+    float Vq = Vq_PI + Vq_ff;
+
+    // ==========================================
+    // STEP 7: Voltage Limiting with Anti-Windup
+    // ==========================================
+
+    float V_mag = sqrtf(Vd*Vd + Vq*Vq);
+
+    if (V_mag > V_MAX) {
+        float scale = V_MAX / V_mag;
+        Vd *= scale;
+        Vq *= scale;
+
+        // Back-calculate to prevent integrator windup
+        integrator_id = Vd - prop_d - Vd_ff;
+        integrator_iq = Vq - prop_q - Vq_ff;
+    }
+
+    // ==========================================
+    // STEP 8: Inverse Park Transform (dq → αβ)
+    // ==========================================
+
+    float V_alpha = cos_theta * Vd - sin_theta * Vq;
+    float V_beta = sin_theta * Vd + cos_theta * Vq;
+
+    // ==========================================
+    // STEP 9: SVPWM (αβ → PWM duties)
+    // ==========================================
+
+    float Ta, Tb, Tc;
+    SVPWM_Calculate(V_alpha, V_beta, VDC, &Ta, &Tb, &Tc);
+
+    // ==========================================
+    // STEP 10: Update PWM
+    // ==========================================
+
+    PWM_SetDuty(PWM_CHANNEL_A, Ta);
+    PWM_SetDuty(PWM_CHANNEL_B, Tb);
+    PWM_SetDuty(PWM_CHANNEL_C, Tc);
+}
+```
+
+#### 6.7.3 FOC Algorithm Flowchart
+
+```
+START (PWM interrupt at 10 kHz)
+   │
+   ├─→ Read ADC (ia, ib) ─→ Calculate ic = -(ia+ib)
+   │
+   ├─→ Read Hall sensors (Ha, Hb, Hc) ─→ Decode θe
+   │
+   ├─→ Calculate ωm, ωe (every 10th cycle)
+   │
+   ├─→ Clarke Transform: (ia, ib, ic) → (iα, iβ)
+   │
+   ├─→ Park Transform: (iα, iβ, θe) → (id, iq)
+   │
+   ├─→ [Every 10th cycle] Speed Loop:
+   │   ω_ref - ωm → Speed PI → i*q
+   │
+   ├─→ Set i*d = 0 (or field weakening)
+   │
+   ├─→ Current Loop d-axis:
+   │   i*d - id → PI → Vd_PI
+   │   Add feedforward: Vd = Vd_PI + Vd_ff
+   │
+   ├─→ Current Loop q-axis:
+   │   i*q - iq → PI → Vq_PI
+   │   Add feedforward: Vq = Vq_PI + Vq_ff
+   │
+   ├─→ Voltage Limiting:
+   │   if √(Vd²+Vq²) > Vmax: scale both
+   │   Back-calculate integrators (anti-windup)
+   │
+   ├─→ Inverse Park: (Vd, Vq, θe) → (Vα, Vβ)
+   │
+   ├─→ SVPWM: (Vα, Vβ, Vdc) → (Ta, Tb, Tc)
+   │
+   ├─→ Update PWM registers
+   │
+   └─→ END (wait for next interrupt)
+```
+
+### 6.8 Key Takeaways - Field Oriented Control
+
+1. **FOC transforms complex AC control into simple DC control** via the dq reference frame
+
+2. **Decoupling is key:** Feedforward compensation eliminates cross-coupling between d and q axes
+
+3. **Two-loop cascade structure:** Fast inner current loop (10 kHz) + slower outer speed loop (1 kHz)
+
+4. **id=0 strategy is optimal for SPMSMs** below base speed (maximum torque per ampere)
+
+5. **PI controllers with anti-windup** are sufficient for good performance
+
+6. **Bandwidth selection matters:**
+   - Current loop: ~1/10 of PWM frequency
+   - Speed loop: ~1/10 of current loop bandwidth
+
+7. **Field weakening extends speed range** by injecting negative id above base speed
+
+8. **Rotor position is critical:** Accurate θe is needed for Park/inverse Park transforms
+
+9. **Real-time constraints:** FOC must execute within one PWM period (typically 50-100 μs)
+
+10. **Systematic tuning:** Always tune current loop first, then speed loop
+
+### 6.9 Further Study - Field Oriented Control
+
+**Foundational Books:**
+
+1. **"Vector Control of AC Drives"** by Peter Vas
+   - The classic comprehensive treatment
+   - Chapters 3-5: FOC theory and implementation
+
+2. **"Control of Electric Machine Drive Systems"** by Seung-Ki Sul
+   - Chapter 7: Vector Control of PMSM
+   - Excellent mathematical rigor
+
+3. **"Advanced Electric Drives"** by Rik De Doncker
+   - Chapter 8: Field-Oriented Control
+   - Modern perspective with DSP implementation
+
+4. **"Power Electronics and Motor Drives"** by Bimal K. Bose
+   - Chapter 9: Vector Control of AC Drives
+   - Practical industrial perspective
+
+**Application Notes (Essential Reading):**
+
+1. **Texas Instruments:**
+   - SPRA588: "Field Orientated Control of 3-Phase AC-Motors"
+   - SPRAAB7: "Sensorless Field Oriented Control of 3-Phase PMSMs"
+   - SPRABQ2: "InstaSPIN-FOC and InstaSPIN-MOTION"
+
+2. **STMicroelectronics:**
+   - AN1078: "FOC Motor Control for PMSM Motors"
+   - AN4277: "PMSM FOC Motor Control SDK"
+   - AN5051: "Sensorless PMSM Field Oriented Control"
+
+3. **Microchip:**
+   - AN1078: "Sensorless Field Oriented Control of PMSM Motors"
+   - AN1299: "Single-Shunt Three-Phase Current Reconstruction Algorithm"
+   - AN2520: "Field Weakening Operation"
+
+4. **Infineon:**
+   - AP32370: "Field Oriented Control of PMSMs"
+   - AP32371: "Sensorless FOC for PMSM using Sliding Mode Observer"
+
+**Papers (Advanced Topics):**
+
+1. **"Field Weakening in PMSM Drives"** by Morimoto et al.
+   - MTPA and field weakening strategies for IPMSMs
+
+2. **"Sensorless Control of PMSMs"** by Holtz
+   - Overview of position estimation methods
+
+3. **"Digital Control Strategies for Brushless PM Drives"** by Jahns
+   - Practical digital implementation considerations
+
+**Video Courses:**
+
+1. **MATLAB/Simulink:**
+   - "Introduction to Field-Oriented Control"
+   - "PMSM Control Design with Simulink"
+
+2. **Texas Instruments Training:**
+   - "Motor Control Fundamentals" series
+   - Practical lab exercises with C2000 DSPs
+
+3. **YouTube - "Zach Star":** "Vector Control Explained"
+
+4. **Coursera:** "Power Electronics Specialization" by University of Colorado
+
+**Interactive Tools:**
+
+1. **PLECS Demo Models:**
+   - FOC_PMSM_Basic.plecs
+   - Field_Weakening_IPMSM.plecs
+
+2. **MATLAB/Simulink Examples:**
+   - Motor Control Blockset → PMSM FOC examples
+   - Includes code generation for TI, STM32, NXP targets
+
+3. **Open-source implementations:**
+   - VESC Project (vedderb/bldc on GitHub)
+   - SimpleFOC library (simplefoc.com)
+   - ODrive firmware (odriverobotics/ODrive)
+
+**Standards and References:**
+
+1. **IEC 61800-7-201:** "Adjustable speed electrical power drive systems"
+2. **IEEE Std 1566:** "Standard for Performance of Adjustable Speed Drives"
+
+---
+
+*End of Section 6 - Field Oriented Control Theory*
 
