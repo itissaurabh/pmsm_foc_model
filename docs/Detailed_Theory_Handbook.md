@@ -1375,6 +1375,911 @@ Modern EV motor controllers include specialized features:
 
 ---
 
+## Section 2A: Motor Selection and Datasheet Analysis
+
+### Introduction
+
+Selecting the right motor for your application and understanding its datasheet are critical skills. A motor datasheet contains a wealth of information, but interpreting it correctly requires understanding what the numbers mean, how they relate to each other, and how motor construction affects performance. This section teaches you to read datasheets like an expert and select motors that will perform optimally in your specific application.
+
+### 2A.1 Anatomy of a Motor Datasheet
+
+A typical PMSM datasheet contains several categories of information. Let's examine each:
+
+#### 2A.1.1 Basic Identification
+
+**Information Provided:**
+```
+Model Number: Example: XYZ-5012-HV
+Type: PMSM (Permanent Magnet Synchronous Motor)
+Frame Size: 50 mm diameter, 12 mm length
+Application: Servo / Traction / Industrial
+Cooling: Natural / Forced Air / Liquid
+Mounting: Flange / Face / Foot
+Protection Rating: IP54 / IP65 / IP67
+```
+
+**What to Look For:**
+- Frame size indicates physical dimensions and thermal capacity
+- Cooling method affects continuous ratings
+- IP rating indicates environmental protection (dust/water ingress)
+
+#### 2A.1.2 Electrical Parameters (The Core Specifications)
+
+These are the most important numbers for control system design:
+
+**1. Rated/Nominal Values:**
+
+| Parameter | Symbol | Typical Value | Notes |
+|-----------|--------|---------------|-------|
+| Rated Voltage | V_rated | 48V, 72V, 300V, 400V | Continuous operation voltage |
+| Rated Current | I_rated | 10 A, 50 A, 200 A | Continuous current (thermal limit) |
+| Rated Power | P_rated | 1 kW, 5 kW, 50 kW | Mechanical output power |
+| Rated Torque | τ_rated | 2 N·m, 10 N·m, 100 N·m | Continuous torque |
+| Rated Speed | N_rated | 3000 RPM, 6000 RPM | Speed at rated torque |
+
+**2. Peak/Maximum Values:**
+
+| Parameter | Symbol | Typical Value | Duration | Notes |
+|-----------|--------|---------------|----------|-------|
+| Peak Current | I_peak | 30 A, 150 A, 600 A | 10-30 sec | Limited by demagnetization |
+| Peak Torque | τ_peak | 6 N·m, 30 N·m, 300 N·m | 10-30 sec | 2-3× rated typical |
+| Peak Power | P_peak | 3 kW, 15 kW, 150 kW | 10-30 sec | For acceleration |
+| Max Speed | N_max | 10000 RPM, 15000 RPM | Continuous | Mechanical limit |
+
+**3. Motor Constants:**
+
+| Parameter | Symbol | Unit | Meaning |
+|-----------|--------|------|---------|
+| Torque Constant | Kt | N·m/A | Torque per amp of current |
+| Voltage Constant (Back-EMF) | Ke | V/(rad/s) or V/1000RPM | Back-EMF per unit speed |
+| Phase Resistance | Rs | Ω (milliohms) | Winding resistance (line-line) |
+| Phase Inductance | Ls or Ld/Lq | mH | Winding inductance |
+| Flux Linkage | λm | Wb (Webers) | Magnet flux linkage |
+| Pole Pairs | P | - | Number of pole pairs |
+
+**4. Electrical Time Constant:**
+
+```
+τ_elec = L / R  (milliseconds)
+
+Indicates how fast current can change
+Typical values: 0.5 - 5 ms
+Affects current loop bandwidth
+```
+
+#### 2A.1.3 Mechanical Parameters
+
+| Parameter | Symbol | Unit | Meaning |
+|-----------|--------|------|---------|
+| Rotor Inertia | J | kg·m² or g·cm² | Resistance to acceleration |
+| Friction/Damping | B | N·m·s or N·m/(rad/s) | Viscous friction |
+| Mechanical Time Constant | τ_mech | ms | J/B, speed response time |
+| Shaft Diameter | d_shaft | mm | For coupling design |
+| Weight | m | kg | For vehicle integration |
+
+#### 2A.1.4 Thermal Parameters
+
+| Parameter | Symbol | Unit | Meaning |
+|-----------|--------|------|---------|
+| Thermal Resistance | Rth | °C/W or K/W | Housing to ambient |
+| Thermal Time Constant | τ_th | seconds/minutes | Heating time constant |
+| Max Winding Temperature | T_wind_max | °C | Usually 120-180°C |
+| Max Ambient Temperature | T_amb_max | °C | Operating environment |
+| Cooling Requirements | - | CFM or L/min | If forced cooling |
+
+#### 2A.1.5 Performance Curves
+
+Good datasheets include graphs:
+
+1. **Torque-Speed Curve:**
+   - Shows constant torque region and constant power region
+   - Indicates base speed (where field weakening starts)
+   - Critical for application matching
+
+2. **Efficiency Map:**
+   - Contour plot of efficiency vs torque and speed
+   - Shows optimal operating zone (peak efficiency region)
+   - Critical for vehicle range estimation
+
+3. **Thermal Derating Curve:**
+   - Shows how ratings change with temperature
+   - Important for hot environments
+
+### 2A.2 Key Motor Parameters Explained
+
+Let's dive deeper into the most important parameters and their relationships:
+
+#### 2A.2.1 Torque Constant (Kt) and Voltage Constant (Ke)
+
+**Physical Meaning:**
+```
+Kt: How much torque per amp of current
+    τ = Kt × I  [N·m = (N·m/A) × A]
+
+Ke: How much back-EMF per unit speed
+    E = Ke × ω  [V = (V·s/rad) × (rad/s)]
+```
+
+**Critical Relationship:**
+```
+In SI units: Kt = Ke
+
+This comes from energy conservation:
+  Electrical power in = Mechanical power out
+  E × I = τ × ω
+  (Ke × ω) × I = (Kt × I) × ω
+  Therefore: Ke = Kt
+```
+
+**Practical Units:**
+```
+Datasheet often gives:
+  Kt in N·m/A
+  Ke in V/1000 RPM  (easier to visualize)
+
+Conversion:
+  Ke [V/(rad/s)] = Ke [V/1000RPM] × (1000 × 2π / 60)
+  Ke [V/(rad/s)] = Ke [V/1000RPM] × 104.72
+
+Example:
+  If Ke = 50 V/1000RPM
+  Then Ke = 50 / 104.72 = 0.477 V/(rad/s) = 0.477 N·m/A
+```
+
+**What It Tells You:**
+
+```
+High Kt (e.g., 1.0 N·m/A):
+  - Produces lots of torque per amp
+  - Good for low-speed, high-torque applications
+  - Higher back-EMF → reaches voltage limit at lower speeds
+  - Example: Direct-drive robot joint
+
+Low Kt (e.g., 0.05 N·m/A):
+  - Less torque per amp (need more current)
+  - Can run to higher speeds before voltage limit
+  - Good for high-speed applications
+  - Example: Spindle motor
+```
+
+#### 2A.2.2 Base Speed and Maximum Speed
+
+**Base Speed** = Speed at which voltage limit is reached with rated current
+
+```
+At base speed:
+  Applied voltage = Back-EMF + resistive drop
+
+V_rated ≈ Ke × ω_base + Rs × I_rated
+
+Approximate base speed:
+  ω_base ≈ (V_rated - Rs × I_rated) / Ke
+
+Example:
+  V_rated = 48 V
+  Ke = 0.05 V/(rad/s) [or 5.24 V/1000RPM]
+  Rs = 0.1 Ω
+  I_rated = 10 A
+
+  ω_base = (48 - 0.1×10) / 0.05 = 940 rad/s = 8,975 RPM
+```
+
+**Maximum Speed** = Mechanical limit (bearings, balancing, centrifugal stress)
+
+```
+Typically: N_max = (2 to 3) × N_base
+
+Limit factors:
+  - Bearing rated speed (DN number)
+  - Rotor mechanical stress
+  - Windage losses
+  - Vibration/balance
+```
+
+#### 2A.2.3 Rated vs Peak Parameters - Understanding the Difference
+
+**Rated (Nominal) Values = Continuous Operation**
+
+These are the values the motor can sustain indefinitely without overheating:
+
+```
+Thermal equilibrium reached:
+  Heat generated = Heat dissipated
+
+Copper losses dominate:
+  P_loss = 3 × Rs × I_rated²
+
+Example:
+  Rs = 0.1 Ω
+  I_rated = 10 A
+  P_loss = 3 × 0.1 × 100 = 30 W
+
+If thermal resistance Rth = 2 °C/W:
+  Temperature rise = 30 W × 2 = 60°C
+
+If T_amb = 40°C, then T_wind = 100°C (safe for Class F insulation, 155°C limit)
+```
+
+**Peak (Maximum) Values = Short Duration**
+
+Peak ratings are limited by:
+
+1. **Thermal Capacity (Dominant for <30 sec):**
+   ```
+   Motor can absorb heat temporarily
+   Thermal mass delays temperature rise
+
+   Energy storage capacity:
+     E = m × c × ΔT
+
+   Typical thermal time constant: 3-10 minutes for small motors
+
+   Rule of thumb:
+     Peak duration = τ_th / 10  (safe estimate)
+   ```
+
+2. **Demagnetization (Critical for >I_rated):**
+   ```
+   High current creates opposing magnetic field
+   Can permanently weaken magnets
+
+   Safe peak current:
+     For standard NdFeB: I_peak ≤ 3 × I_rated
+     For HRE-free NdFeB: I_peak ≤ 2.5 × I_rated
+     At elevated temperature: Reduce further by 20%
+   ```
+
+3. **Voltage/Current Limits:**
+   ```
+   Controller current limit
+   Battery voltage sag under load
+   ```
+
+**Typical Peak-to-Rated Ratios:**
+
+| Application | τ_peak/τ_rated | I_peak/I_rated | Duration | Reason |
+|-------------|----------------|----------------|----------|--------|
+| Industrial (steady) | 1.5:1 | 1.5:1 | 10 sec | Startup only |
+| Servo (intermittent) | 3:1 | 3:1 | 10 sec | Frequent accel |
+| EV Traction | 3:1 to 4:1 | 2.5:1 to 3:1 | 30 sec | Hard acceleration |
+| Robotics | 4:1 | 3:1 | 5 sec | Rapid movements |
+
+**Important:** Always check datasheet for specific peak duration ratings. Some manufacturers specify multiple peak durations (e.g., 10 sec, 60 sec).
+
+#### 2A.2.4 Power Ratings and Their Relationships
+
+**Three Ways to Specify Power:**
+
+1. **Rated Mechanical Power:**
+   ```
+   P_mech = τ_rated × ω_rated  [Watts]
+
+   Example:
+     τ_rated = 10 N·m
+     N_rated = 3000 RPM = 314.16 rad/s
+     P_rated = 10 × 314.16 = 3.14 kW
+   ```
+
+2. **Rated Electrical Input Power:**
+   ```
+   P_elec = √3 × V_line × I_line  [for 3-phase]
+         = 3 × V_phase × I_phase
+
+   Example:
+     V_phase = 48 V
+     I_rated = 10 A
+     P_elec = 3 × 48 × 10 = 1.44 kW
+   ```
+
+3. **Peak Power:**
+   ```
+   P_peak = τ_peak × ω_rated
+          (or τ_rated × ω_max, depending on operating point)
+   ```
+
+**Consistency Check:**
+```
+P_mech should be less than P_elec by the efficiency:
+
+P_mech / P_elec = η  (efficiency)
+
+Typical efficiency: 85-97% depending on motor size and quality
+
+If datasheet gives P_rated = 3 kW and I_rated = 10 A at 48 V:
+  P_elec = 3 × 48 × 10 = 1440 W
+  Efficiency = 3000 / 1440 = 2.08 → ERROR! Impossible (>100%)
+
+This indicates datasheet error or misunderstanding of ratings.
+```
+
+### 2A.3 How Motor Construction Affects Datasheet Parameters
+
+Understanding the relationship between physical design and performance:
+
+#### 2A.3.1 Stator Design Impact
+
+**Number of Slots:**
+```
+More slots (e.g., 48 slots vs 36 slots):
+  Pros: Lower torque ripple, better high-speed performance
+  Cons: More complex winding, higher cost
+  Effect on datasheet: Lower torque ripple spec
+```
+
+**Winding Type:**
+```
+Concentrated winding (each tooth):
+  - Higher Kt (more torque per amp)
+  - Lower max speed (higher inductance)
+  - Easier to manufacture
+
+Distributed winding (across multiple teeth):
+  - Lower Kt
+  - Higher max speed capability
+  - Better EMF waveform (lower THD)
+```
+
+**Wire Gauge:**
+```
+Thicker wire:
+  - Lower Rs → Lower copper losses → Higher rated current
+  - Fewer turns → Lower Kt and Ke
+  - Lower inductance → Faster current response
+
+Thinner wire:
+  - Higher Rs → Lower rated current (heats up faster)
+  - More turns → Higher Kt and Ke
+  - Higher inductance
+```
+
+**Example Tradeoff:**
+```
+Motor A: 50 turns, AWG 18 wire
+  Rs = 0.05 Ω
+  Kt = 0.15 N·m/A
+  I_rated = 20 A (limited by wire ampacity)
+
+Motor B: 100 turns, AWG 24 wire
+  Rs = 0.20 Ω (thinner, longer wire)
+  Kt = 0.30 N·m/A (double the turns)
+  I_rated = 8 A (smaller wire heats faster)
+
+Same frame size, but different characteristics!
+```
+
+#### 2A.3.2 Rotor/Magnet Design Impact
+
+**Magnet Thickness:**
+```
+Thicker magnets:
+  - Higher flux linkage λm
+  - Higher Kt (more torque per amp)
+  - Higher Ke (reaches voltage limit sooner)
+  - Better resistance to demagnetization
+  - More expensive
+
+Datasheet impact:
+  - Higher rated torque for same current
+  - Lower base speed
+  - Better peak torque capability
+```
+
+**Magnet Material (see Section 2.11):**
+```
+NdFeB magnets:
+  - High Kt → Smaller motor for same torque
+  - Allow higher I_peak (2-3× rated)
+
+HRE-free NdFeB:
+  - Slightly lower Kt
+  - Lower I_peak (2-2.5× rated)
+  - Datasheet should specify demagnetization limit
+
+Ferrite:
+  - Much lower Kt → Larger motor needed
+  - Very high I_peak possible (hard to demagnetize)
+```
+
+**IPM vs SPM:**
+```
+Interior PM (IPM):
+  - Ld < Lq (saliency)
+  - Reluctance torque available
+  - Better field weakening capability
+  - Datasheet shows wider constant power speed range (CPSR)
+  - Higher max speed (3-5× base speed typical)
+
+Surface PM (SPM):
+  - Ld ≈ Lq
+  - No reluctance torque
+  - Limited field weakening
+  - Datasheet shows narrower CPSR (1.5-2× base speed)
+```
+
+#### 2A.3.3 Thermal Design Impact
+
+**Cooling Method:**
+```
+Natural Convection:
+  - Lowest rated current (limited heat dissipation)
+  - Simple, reliable, low cost
+  - Typical Rth: 3-10 °C/W (small motors)
+
+Forced Air:
+  - 50-100% higher rated current
+  - Requires fan (adds complexity)
+  - Typical Rth: 1-3 °C/W
+
+Liquid Cooling:
+  - 200-300% higher rated current
+  - Best for high-power density
+  - Typical Rth: 0.2-1 °C/W
+  - Adds system complexity (pumps, plumbing)
+```
+
+**Frame Material:**
+```
+Aluminum housing:
+  - Good thermal conductivity
+  - Lightweight
+  - Standard choice
+
+Copper housing (rare):
+  - Excellent thermal conductivity
+  - Heavy, expensive
+  - Used in extreme applications
+
+Plastic housing:
+  - Poor thermal conductivity
+  - Very low rated current
+  - Cheap, lightweight
+```
+
+### 2A.4 Interpreting the Torque-Speed Curve
+
+The torque-speed curve is the most important graph in the datasheet.
+
+#### 2A.4.1 Typical Torque-Speed Curve Anatomy
+
+```
+Torque (N·m)
+  ↑
+  │
+  │╔════╗ ← Peak Torque (short duration)
+  │║    ║
+ τ│║    ║
+ _│║    ║
+ p│║    ╠══════════ ← Peak Power Hyperbola
+ e│║    ║
+ a│╠────╬──────────────┐
+ k│║    ║              │← Continuous Power Limit
+  │║    ║              │
+ τ│║    ║              │
+ _│║    ║              └────────────
+ r│║    ║                    ↑
+ a│║    ║                 Peak Speed
+ t│╚════╝                   (thermal/mechanical limit)
+ e│ └────┴──────────────────────────────→ Speed (RPM)
+ d│   Base  Speed at  Max
+  │  Speed  rated    Speed
+  │        power
+  0
+```
+
+**Three Regions:**
+
+**Region 1: Constant Torque (0 to Base Speed)**
+```
+Characteristics:
+  - Torque limited by rated current
+  - Voltage has headroom
+  - id = 0 control (MTPA)
+  - Best efficiency zone
+
+Equations:
+  τ = τ_rated = constant
+  P = τ × ω  (power increases linearly with speed)
+  V < V_rated
+```
+
+**Region 2: Constant Power (Base Speed to Max Speed)**
+```
+Characteristics:
+  - Voltage limit reached
+  - Must reduce torque to go faster (field weakening)
+  - id < 0 (flux weakening)
+  - Slightly lower efficiency
+
+Equations:
+  P = P_rated = constant
+  τ = P / ω  (torque decreases as 1/ω)
+  V = V_rated
+```
+
+**Region 3: High-Speed Limit**
+```
+Characteristics:
+  - Mechanical limits (bearings, balance)
+  - Windage losses increase
+  - May not be able to maintain rated power
+
+Limitation factors:
+  - Bearing DN rating
+  - Rotor stress
+  - Efficiency drops
+```
+
+#### 2A.4.2 Application Matching Using Torque-Speed Curve
+
+**Example 1: Electric Vehicle**
+
+```
+Required operating points:
+  - Launch: 200 N·m at 0-1000 RPM (peak torque)
+  - Acceleration: 150 N·m at 1000-3000 RPM
+  - Cruise: 30 N·m at 6000 RPM (constant power)
+  - Top speed: 10,000 RPM
+
+Motor selection criteria:
+  ✓ Peak torque ≥ 200 N·m
+  ✓ Base speed ≤ 3000 RPM (stay in constant torque for acceleration)
+  ✓ Max speed ≥ 10,000 RPM
+  ✓ CPSR ≥ 3:1 (3000 to 10000 RPM range)
+  ✓ Rated power ≥ 30 N·m × (6000 RPM × 2π/60) = 18.8 kW
+
+Conclusion: Need IPM motor with good field weakening capability
+```
+
+**Example 2: CNC Spindle**
+
+```
+Required operating points:
+  - Low torque at all speeds
+  - Must maintain speed precision
+  - Operating range: 2000-24,000 RPM
+  - Minimal torque ripple
+
+Motor selection criteria:
+  ✓ High max speed (>24,000 RPM)
+  ✓ Low torque ripple (<3%)
+  ✓ Moderate power (spindle cutting forces are low)
+  ✓ High-resolution encoder feedback
+
+Conclusion: Need high-speed SPM motor with distributed winding
+```
+
+### 2A.5 Finding the Optimal Operating Zone
+
+#### 2A.5.1 Efficiency Maps and Sweet Spots
+
+Modern datasheets include efficiency contour maps:
+
+```
+    Speed (RPM)
+    6000 ┌─────────────────────────┐
+         │         │               │
+    5000 │    90%  │  92%    94%   │
+         │         │         ╱│╲   │
+    4000 │         │       ╱  │  ╲ │← Peak efficiency zone
+         │         │     ╱    │    │   (94-96%)
+    3000 │    88%  │   ╱  95% │    │
+         │         │ ╱        │    │
+    2000 │         ╱      93% │    │
+         │       ╱            │    │
+    1000 │  85% │      90%    │    │
+         │      │             │    │
+       0 └──────┴─────────────┴────┘
+         0     25%    50%    75%  100%
+                  Torque (% of rated)
+```
+
+**Reading the Map:**
+
+**High Efficiency Zone (>94%):**
+```
+Typical location:
+  - 50-80% of rated torque
+  - 30-60% of max speed
+  - In the constant torque region
+
+Why this zone is efficient:
+  - Copper losses not too high (moderate current)
+  - Iron losses not too high (moderate frequency)
+  - Good utilization of motor capability
+```
+
+**Low Efficiency Zones:**
+
+```
+Low torque, low speed (<80%):
+  - Fixed losses (friction, iron loss no-load) dominate
+  - Poor utilization of motor capability
+
+High torque, any speed (<88%):
+  - I²R losses dominate
+  - Approaching thermal limits
+
+High speed, low torque (<85%):
+  - Iron losses and windage increase with speed²
+  - Copper losses for magnetization still present
+```
+
+#### 2A.5.2 Designing Operating Profile for Maximum Efficiency
+
+**Step-by-Step Process:**
+
+**Step 1: Understand Your Duty Cycle**
+
+```
+For an EV:
+  City driving:
+    80% of time: 0-40 km/h (0-1500 RPM)
+    15% of time: 40-80 km/h (1500-3000 RPM)
+    5% of time: >80 km/h (>3000 RPM)
+
+  Torque distribution:
+    50% of time: <25% torque (cruising)
+    30% of time: 25-50% torque (light acceleration)
+    15% of time: 50-75% torque (moderate acceleration)
+    5% of time: >75% torque (hard acceleration)
+```
+
+**Step 2: Overlay Duty Cycle on Efficiency Map**
+
+```
+Calculate weighted average efficiency:
+
+η_avg = Σ (η_i × time_i) / Σ time_i
+
+Example:
+  50% time at 93% efficiency (cruise)
+  30% time at 94% efficiency (light accel)
+  15% time at 92% efficiency (moderate accel)
+  5% time at 88% efficiency (hard accel)
+
+η_avg = (0.50×93 + 0.30×94 + 0.15×92 + 0.05×88) = 92.95%
+```
+
+**Step 3: Optimize Motor/Gear Ratio**
+
+```
+Adjust gear ratio to shift operating points into high-efficiency zone:
+
+If most driving is at 50 km/h (cruising):
+  Target: This speed should be in peak efficiency zone (50-70% torque, 30-50% max speed)
+
+Example calculation:
+  Vehicle speed: 50 km/h
+  Wheel diameter: 0.6 m
+  Wheel RPM: (50×1000/60) / (π×0.6) = 442 RPM
+
+  Want motor at 3000 RPM (center of efficiency zone):
+    Gear ratio = 3000 / 442 = 6.8:1
+
+  This places cruise condition in optimal zone!
+```
+
+#### 2A.5.3 Motor Parameter Sensitivity Analysis
+
+Understanding how parameter variations affect performance:
+
+**Resistance Variation with Temperature:**
+```
+Rs increases ~0.4%/°C for copper
+
+At cold (25°C): Rs = 0.10 Ω
+At hot (125°C): Rs = 0.10 × (1 + 0.004×100) = 0.14 Ω (40% increase!)
+
+Impact on efficiency:
+  P_loss = 3 × Rs × I²
+  At 10 A: Cold loss = 30 W, Hot loss = 42 W
+
+  Efficiency drops by ~1-2% when hot
+```
+
+**Magnet Flux Variation with Temperature:**
+```
+λm decreases ~0.11%/°C for NdFeB
+
+At cold (25°C): λm = 0.10 Wb
+At hot (125°C): λm = 0.089 Wb (11% decrease)
+
+Impact:
+  Kt decreases → Need more current for same torque
+  Ke decreases → Base speed increases slightly
+  Overall efficiency drops by ~0.5-1%
+```
+
+### 2A.6 Practical Datasheet Reading Example
+
+Let's analyze a real-world motor spec sheet:
+
+**Example Datasheet: EV Traction Motor XYZ-100HV**
+
+```
+ELECTRICAL SPECIFICATIONS:
+  Rated Voltage: 400 V DC
+  Rated Current: 150 A
+  Peak Current: 450 A (30 sec)
+  Rated Power: 50 kW
+  Peak Power: 120 kW (30 sec)
+  Rated Torque: 150 N·m
+  Peak Torque: 450 N·m (30 sec)
+  Rated Speed: 3180 RPM (333 rad/s)
+  Max Speed: 12,000 RPM
+
+  Torque Constant (Kt): 1.0 N·m/A
+  Voltage Constant (Ke): 95 V/1000 RPM
+  Phase Resistance (Rs): 15 mΩ (at 25°C)
+  Phase Inductance (Ld/Lq): 45 μH / 65 μH
+  Pole Pairs: 4
+
+MECHANICAL SPECIFICATIONS:
+  Rotor Inertia: 0.015 kg·m²
+  Weight: 45 kg
+  Cooling: Liquid (water/glycol, 5 L/min)
+
+THERMAL SPECIFICATIONS:
+  Thermal Resistance: 0.15 °C/W
+  Max Winding Temp: 180°C (Class H)
+  Max Ambient: 65°C
+```
+
+**Analysis:**
+
+**1. Check Consistency:**
+```
+P_rated vs τ_rated × ω_rated:
+  P = 150 × (3180 RPM × 2π/60) = 150 × 333 = 50 kW ✓
+
+Kt vs Ke check:
+  Ke = 95 V/1000 RPM = 95/104.72 = 0.907 V/(rad/s)
+  Should equal Kt = 1.0 N·m/A
+  Close enough (likely rounding) ✓
+```
+
+**2. Calculate Base Speed:**
+```
+ω_base = (V_rated - Rs×I_rated) / Ke
+       = (400 - 0.015×150) / 0.907
+       = 397.8 / 0.907 = 439 rad/s = 4190 RPM
+
+Datasheet says rated speed = 3180 RPM < base speed
+This means motor operates comfortably in constant torque region ✓
+```
+
+**3. Calculate CPSR:**
+```
+CPSR = Max Speed / Base Speed
+     = 12000 / 4190 = 2.86:1
+
+Moderate field weakening capability (typical for IPM with Ld<Lq) ✓
+```
+
+**4. Verify Peak Ratings:**
+```
+Peak current = 450 A = 3 × rated current ✓ (standard for NdFeB)
+Peak torque = 450 N·m = 3 × rated torque ✓ (consistent with I_peak)
+Peak power = 120 kW = 2.4 × rated power ✓
+
+Peak duration = 30 sec ✓ (typical for EV)
+```
+
+**5. Thermal Analysis:**
+```
+Continuous losses at rated:
+  P_copper = 3 × Rs × I_rated²
+           = 3 × 0.015 × 150² = 1012 W
+
+Temperature rise:
+  ΔT = P_loss × Rth = 1012 × 0.15 = 152°C
+
+If T_amb_max = 65°C:
+  T_winding = 65 + 152 = 217°C → EXCEEDS 180°C limit! ⚠
+
+Issue: Either datasheet is optimistic, or cooling must be very effective.
+Check: Maybe Rth specified with ideal coolant flow.
+```
+
+**6. Application Suitability:**
+
+```
+For mid-size EV (e.g., sedan):
+  ✓ Power adequate (50 kW rated, 120 kW peak)
+  ✓ Torque good for acceleration (450 N·m peak)
+  ✓ Speed range suitable (up to 12000 RPM)
+  ✓ CPSR adequate for highway driving
+  ⚠ Weight is moderate (45 kg) - acceptable
+  ⚠ Requires liquid cooling system (adds complexity)
+
+Conclusion: Good choice for EV, but thermal management critical
+```
+
+### 2A.7 Common Datasheet Pitfalls and Red Flags
+
+**Red Flag #1: Impossible Efficiency**
+```
+If P_rated / (V × I) > 0.98, be suspicious
+No motor is >98% efficient except very large industrial motors
+
+Example:
+  Rated power: 10 kW
+  Voltage: 48 V
+  Current: 180 A
+  Input power: 3 × 48 × 180 = 25.9 kW
+  Claimed efficiency: 10/25.9 = 38.6% → Very low, something wrong!
+```
+
+**Red Flag #2: Peak Ratings Without Duration**
+```
+"Peak torque: 500 N·m" but no duration specified
+Could mean:
+  - 1 second? (useless for most applications)
+  - 10 seconds? (useful)
+  - 1 minute? (unlikely, would overheat)
+
+Always insist on duration specification!
+```
+
+**Red Flag #3: Missing Thermal Information**
+```
+If datasheet doesn't specify:
+  - Thermal resistance or cooling requirements
+  - Maximum winding temperature
+  - Derating curves
+
+Assume worst case or request data from manufacturer.
+```
+
+**Red Flag #4: Unrealistic CPSR Claims**
+```
+For SPM motors: CPSR > 2:1 is suspicious
+For IPM motors: CPSR > 5:1 is rare
+
+If claimed CPSR is very high, verify:
+  - Is field weakening algorithm proven?
+  - What are efficiency losses in field weakening region?
+  - Is demagnetization risk mentioned?
+```
+
+**Red Flag #5: "Marketing Watts" vs Real Power**
+```
+Some manufacturers list input electrical power as "motor power"
+
+Always check if power spec is:
+  ✓ Mechanical output power (correct)
+  ✗ Electrical input power (misleading)
+  ✗ Peak power only (incomplete information)
+```
+
+### 2A.8 Key Takeaways - Motor Datasheets
+
+1. **Understand rated vs peak:** Rated = continuous, Peak = short duration (10-30 sec)
+
+2. **Check consistency:** P = τ × ω, Kt = Ke, I_peak typically 2-3× I_rated
+
+3. **Torque-speed curve is critical:** Shows constant torque, constant power, and limitation regions
+
+4. **Efficiency maps guide design:** Optimize gear ratio to place duty cycle in high-efficiency zone
+
+5. **Thermal analysis is essential:** Verify rated current won't exceed temperature limits
+
+6. **Motor construction matters:** IPM vs SPM, magnet type, cooling method all affect specs
+
+7. **Application matching:** Match motor's torque-speed curve to your application's operating profile
+
+8. **Base speed calculation:** ω_base ≈ V_rated / Ke, determines field weakening starting point
+
+9. **CPSR indicates field weakening:** Higher CPSR = better high-speed capability
+
+10. **Read critically:** Watch for red flags, unrealistic claims, missing information
+
+---
+
+*End of Section 2A - Motor Selection and Datasheet Analysis*
+
+---
+
 ## 3. Understanding Reference Frames - The Foundation of FOC
 
 ### 3.1 What Is a Reference Frame?
