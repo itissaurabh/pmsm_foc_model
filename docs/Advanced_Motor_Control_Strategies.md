@@ -294,3 +294,2434 @@ Think of it this way:
 
 ---
 
+### 1.2 Control Implementation
+
+**Field Weakening Controller Structure:**
+
+```
+The field weakening controller calculates the required id current based on:
+  1. Current speed (ω)
+  2. Voltage limit
+  3. Current limit
+  4. Torque demand
+
+Block diagram:
+
+Speed (ω) ──┐
+            │
+Torque_ref ─┼──→ [FW Controller] ──→ id_ref (negative)
+            │                    └──→ iq_ref (positive)
+V_limit ────┤
+I_limit ────┘
+```
+
+**Algorithm 1: Simple Voltage-Based Field Weakening**
+
+```c
+// Inputs
+float omega;          // Electrical speed (rad/s)
+float V_limit;        // Maximum voltage (V)
+float I_limit;        // Maximum current (A)
+float Torque_cmd;     // Torque command (Nm)
+
+// Motor parameters
+float lambda_m;       // Flux linkage (Wb)
+float Ld;            // d-axis inductance (H)
+float Lq;            // q-axis inductance (H)
+float P;             // Pole pairs
+
+// Calculate characteristic current
+float I_ch = lambda_m / Ld;
+
+// Calculate base speed
+float omega_base = V_limit / lambda_m;
+
+// Determine operating region and calculate id_ref, iq_ref
+float id_ref, iq_ref;
+
+if (omega <= omega_base) {
+    // Region 1: MTPA (below base speed)
+    id_ref = 0.0f;  // No field weakening
+
+    // Calculate iq from torque command
+    iq_ref = (2.0f * Torque_cmd) / (3.0f * P * lambda_m);
+
+    // Limit iq to maximum current
+    if (iq_ref > I_limit) {
+        iq_ref = I_limit;
+    }
+}
+else {
+    // Region 2: Field Weakening (above base speed)
+
+    // Calculate required id for voltage constraint
+    id_ref = -I_ch + (V_limit / (omega * Ld));
+
+    // Calculate available iq from current constraint
+    float id_squared = id_ref * id_ref;
+    float I_limit_squared = I_limit * I_limit;
+
+    if (id_squared < I_limit_squared) {
+        iq_ref = sqrtf(I_limit_squared - id_squared);
+    }
+    else {
+        // Too much field weakening current required
+        iq_ref = 0.0f;
+        id_ref = -I_limit;  // Maximum field weakening
+    }
+
+    // Scale iq based on torque command
+    float max_torque = (3.0f * P * lambda_m * iq_ref) / 2.0f;
+    if (Torque_cmd < max_torque) {
+        iq_ref = (2.0f * Torque_cmd) / (3.0f * P * lambda_m);
+    }
+}
+
+// Apply slew rate limiting for smooth transitions
+id_ref = slew_rate_limit(id_ref, id_ref_prev, MAX_ID_SLEW_RATE);
+iq_ref = slew_rate_limit(iq_ref, iq_ref_prev, MAX_IQ_SLEW_RATE);
+```
+
+**Algorithm 2: Voltage Feedback Field Weakening**
+
+More robust approach that monitors actual voltage and adjusts field weakening dynamically:
+
+```c
+// Voltage monitoring
+float Vd_actual = /* measured d-axis voltage */;
+float Vq_actual = /* measured q-axis voltage */;
+float V_actual = sqrtf(Vd_actual * Vd_actual + Vq_actual * Vq_actual);
+
+// Voltage error
+float V_error = V_limit - V_actual;
+
+// Proportional field weakening controller
+float Kp_fw = 0.1f;  // Tuning parameter
+
+// Calculate id adjustment
+float id_fw_adjustment = Kp_fw * V_error;
+
+// Start from MTPA
+id_ref = 0.0f;
+
+// If voltage is too high, add negative id
+if (V_error < 0) {
+    id_ref = id_fw_adjustment;  // Will be negative
+}
+
+// Limit id
+float id_min = -I_limit;
+float id_max = 0.0f;
+id_ref = fmaxf(id_min, fminf(id_max, id_ref));
+
+// Calculate iq from remaining current capacity
+iq_ref = sqrtf(I_limit * I_limit - id_ref * id_ref);
+
+// Scale by torque command
+float torque_scaling = Torque_cmd / Max_Torque;
+iq_ref = iq_ref * torque_scaling;
+```
+
+**Algorithm 3: Look-Up Table (LUT) Method**
+
+Pre-calculated optimal id, iq pairs for efficiency:
+
+```c
+// Pre-computed LUT during motor characterization
+// Indexed by speed and torque
+struct FW_LUT_Entry {
+    float speed;        // rad/s
+    float torque;       // Nm
+    float id_optimal;   // A
+    float iq_optimal;   // A
+    float efficiency;   // %
+};
+
+FW_LUT_Entry fw_table[SPEED_POINTS][TORQUE_POINTS];
+
+// Runtime lookup with interpolation
+float lookup_fw_currents(float speed, float torque,
+                         float* id_out, float* iq_out) {
+    // Find surrounding points in table
+    int speed_idx_low, speed_idx_high;
+    int torque_idx_low, torque_idx_high;
+
+    // ... find indices ...
+
+    // Bilinear interpolation
+    float id_interp = bilinear_interpolate(
+        fw_table, speed, torque,
+        speed_idx_low, speed_idx_high,
+        torque_idx_low, torque_idx_high
+    );
+
+    float iq_interp = /* similar interpolation for iq */;
+
+    *id_out = id_interp;
+    *iq_out = iq_interp;
+}
+```
+
+**Transition Logic (MTPA to FW):**
+
+Smooth transition is critical to avoid torque ripple:
+
+```c
+// Hysteresis for transition
+float omega_enter_fw = omega_base * 0.95f;  // Enter FW early
+float omega_exit_fw = omega_base * 0.90f;   // Exit FW with hysteresis
+
+static enum {MTPA_MODE, FW_MODE} control_mode = MTPA_MODE;
+
+// State machine for smooth transition
+switch (control_mode) {
+    case MTPA_MODE:
+        if (omega > omega_enter_fw) {
+            control_mode = FW_MODE;
+            // Start ramping id negative
+        }
+        id_ref = 0.0f;
+        iq_ref = /* calculate from torque */;
+        break;
+
+    case FW_MODE:
+        if (omega < omega_exit_fw) {
+            control_mode = MTPA_MODE;
+            // Ramp id back to zero
+        }
+        // Calculate field weakening id, iq
+        id_ref = calculate_fw_id(omega);
+        iq_ref = calculate_fw_iq(id_ref, torque_cmd);
+        break;
+}
+
+// Slew rate limiting for smooth transition
+float id_slew_rate = 100.0f;  // A/s (tune based on application)
+id_ref = apply_slew_rate(id_ref, id_ref_prev, id_slew_rate, dt);
+```
+
+**Practical Tuning Guidelines:**
+
+```
+1. Start conservatively:
+   - Enter field weakening at 90-95% of calculated base speed
+   - Use slow slew rates (50-100 A/s)
+   - Monitor voltage margin
+
+2. Voltage margin:
+   - Don't operate at exactly V_limit
+   - Leave 5-10% margin for transients
+   - Adjusted V_limit = 0.9 * Vdc / √3
+
+3. Current margin:
+   - Similarly, don't use full I_limit in FW
+   - Reserve 10% for transients
+   - Adjusted I_limit = 0.9 * I_rated
+
+4. Testing procedure:
+   - Start with no load
+   - Gradually increase speed through base speed
+   - Monitor voltage, current, torque ripple
+   - Tune Kp_fw for smooth transition
+   - Add load and repeat
+
+5. Common issues:
+   - Oscillation at transition → reduce gains, add filtering
+   - Torque dip at transition → enter FW earlier
+   - Overheating in FW → reduce maximum FW speed or current
+```
+
+---
+
+### References for Section 1.2:
+
+**Application Notes:**
+1. **Texas Instruments**: "Software Flux Weakening for PMSM" (SPRABV1)
+2. **Microchip**: "Field Weakening Implementation" (AN1162)
+3. **Infineon**: "FOC Firmware Field Weakening" (AP32370)
+
+**Papers:**
+1. "Robust Flux-Weakening Control of PMSM" - IEEE Transactions on Industrial Electronics
+2. "Transition Control Between MTPA and Field Weakening" - IEEE ECCE Conference
+
+---
+
+### 1.3 Electronics Considerations for Field Weakening
+
+Field weakening operation imposes additional stresses on the motor controller electronics that must be carefully managed.
+
+**Increased Electrical Stress:**
+
+```
+1. Higher Current in Field Weakening:
+   - Total current magnitude remains at I_limit
+   - But now id (reactive) + iq (active) = I_limit
+   - No additional torque production from id component
+   - id² heating losses without useful work
+
+2. Current RMS Heating:
+   I_total_rms = √(id_rms² + iq_rms²)
+
+   Example:
+     Below base speed: id = 0A, iq = 150A
+       I_rms = 150A
+
+     In field weakening: id = -100A, iq = 111A
+       I_rms = √(100² + 111²) = 149A (same magnitude)
+       But distribution changes!
+
+3. Increased Conduction Loss:
+   P_cond = I²_rms × RDS_on
+
+   In FW, continuous high current → more heating
+```
+
+**Inverter Thermal Management:**
+
+```
+Field weakening operation typically means:
+  - Sustained high-speed, high-current operation
+  - Longer duty cycles (highway driving vs city)
+  - Less cooling airflow (motor spinning fast but vehicle static)
+
+Thermal concerns:
+  1. MOSFET junction temperature
+  2. DC link capacitor temperature (high RMS ripple current)
+  3. Current sense resistors (continuous I²R heating)
+  4. PCB copper traces (sustained high current)
+
+Mitigation:
+  - Derate maximum FW speed based on thermal limits
+  - Monitor temperatures and reduce power if needed
+  - Design cooling for sustained FW operation, not just peak
+```
+
+**Voltage Stress and Overvoltage:**
+
+```
+When entering/exiting field weakening rapidly:
+
+Problem: Sudden change in motor impedance can cause voltage spikes
+
+Example scenario:
+  1. Running at high speed in FW with id = -100A
+  2. Driver suddenly releases accelerator
+  3. Controller tries to reduce iq rapidly
+  4. Motor back-EMF hasn't changed yet (inertia)
+  5. Energy stored in motor inductance must go somewhere
+  6. Voltage spike: ΔV = L × (di/dt)
+
+Mitigation:
+  1. Limit di/dt (slew rate) for id and iq
+  2. Adequate DC link capacitance
+  3. Overvoltage protection (clamping)
+  4. Controlled ramp-down from FW
+```
+
+**Controller Derating in Field Weakening:**
+
+```c
+// Temperature-based FW derating
+float derate_fw_for_temperature(float T_junction, float T_capacitor) {
+    float max_fw_speed_factor = 1.0f;
+
+    // Derate based on junction temperature
+    if (T_junction > 125.0f) {
+        // Linear derate from 125°C to 150°C
+        max_fw_speed_factor = 1.0f - (T_junction - 125.0f) / 25.0f;
+    }
+
+    // Derate based on capacitor temperature
+    if (T_capacitor > 85.0f) {
+        float cap_derate = 1.0f - (T_capacitor - 85.0f) / 20.0f;
+        max_fw_speed_factor = fminf(max_fw_speed_factor, cap_derate);
+    }
+
+    // Clamp to reasonable range
+    max_fw_speed_factor = fmaxf(0.5f, fminf(1.0f, max_fw_speed_factor));
+
+    return max_fw_speed_factor;
+}
+
+// Apply derating
+float omega_max_fw_derated = omega_max_fw * derate_fw_for_temperature(T_j, T_cap);
+```
+
+**DC Link Capacitor Stress:**
+
+```
+In field weakening:
+  - Higher frequency operation
+  - Increased ripple current
+  - More heating in capacitor ESR
+
+Ripple current in FW:
+  I_ripple_rms ≈ 0.4 × I_motor_rms (typical)
+
+At high speeds (2× base speed):
+  - Frequency doubles
+  - ESR may increase (frequency-dependent)
+  - Temperature rises
+
+Capacitor life vs. temperature:
+  Every 10°C increase → ~50% reduction in lifetime
+
+Design considerations:
+  - Select capacitors rated for ripple current at FW speed
+  - Monitor capacitor temperature
+  - Derate FW operation if capacitor temp exceeds 85°C
+```
+
+---
+
+### References for Section 1.3:
+
+**Application Notes:**
+1. **Infineon**: "Motor Drive Power Stage Thermal Design" (AN2016-08)
+2. **Texas Instruments**: "Thermal Considerations in Motor Drives" (SLVA462)
+3. **TDK**: "Aluminum Electrolytic Capacitors - Ripple Current" (Technical Note)
+
+**Papers:**
+1. "Thermal Management for Field Weakening Operation in EV Drives" - IEEE VPPC Conference
+2. "DC-Link Capacitor Selection for Motor Drives" - IEEE Transactions on Power Electronics
+
+---
+
+### 1.4 Vehicle Towing and Field Weakening Safety
+
+**The Towing Problem:**
+
+When a vehicle is towed (or coasting downhill with motor unpowered), the motor acts as a generator:
+
+```
+Towing scenario:
+  1. Wheels turn → motor spins
+  2. Motor generates back-EMF
+  3. If controller is OFF, this voltage appears across inverter
+  4. Can exceed MOSFET voltage rating → FAILURE
+
+Back-EMF at towing speeds:
+  E_phase = ω × λm
+
+Example:
+  Vehicle towed at 100 km/h (62 mph)
+  Motor: 4 pole pairs, λm = 0.0118 Wb
+  Tire diameter: 0.65m
+
+  Vehicle speed = 100 km/h = 27.8 m/s
+  Wheel RPM = (27.8 / (π × 0.65)) × 60 = 814 RPM
+
+  Motor RPM = Wheel RPM × Gear Ratio
+            = 814 × 10 = 8,140 RPM
+
+  Electrical frequency = 8140 × 4 / 60 = 543 Hz
+  ω_elec = 2π × 543 = 3,411 rad/s
+
+  E_phase = 3411 × 0.0118 = 40.2V (phase, RMS)
+  E_line_peak = 40.2 × √2 × √3 = 98.5V
+
+This is manageable for 400V system, but...
+
+At 200 km/h:
+  E_line_peak = 197V (still okay)
+
+But consider:
+  - Worn MOSFETs have lower voltage tolerance
+  - Transient spikes during bumps
+  - Uncontrolled rectification through body diodes
+```
+
+**Uncontrolled Rectification:**
+
+```
+When controller is OFF but motor spinning:
+
+  Motor ──→ Inverter (OFF) ──→ DC Bus
+           Body Diodes
+           conduct
+
+Result:
+  - Back-EMF charges DC bus through body diodes
+  - DC bus voltage rises
+  - No controlled path for energy
+  - Voltage can exceed safe limits
+
+Worst case:
+  - High-speed towing
+  - Small or disconnected DC bus capacitance
+  - Voltage spike during sudden deceleration
+```
+
+**Solution 1: Controlled Field Weakening During Tow**
+
+Keep controller powered and actively weaken field:
+
+```c
+// Tow mode detection
+bool detect_tow_mode() {
+    bool motor_spinning = (abs(omega) > MIN_TOWING_SPEED);
+    bool no_torque_command = (Torque_cmd == 0);
+    bool no_throttle = (Throttle_position == 0);
+
+    return (motor_spinning && no_torque_command && no_throttle);
+}
+
+// Tow mode field weakening
+void tow_mode_field_weakening() {
+    // Calculate back-EMF
+    float E_backemf = omega * lambda_m;
+
+    // Calculate required id to null the flux
+    // Goal: Make net flux = 0
+    float id_tow = -lambda_m / Ld;  // Maximum field weakening
+
+    // Limit to available current
+    if (fabs(id_tow) > I_LIMIT_TOW) {
+        id_tow = -I_LIMIT_TOW;
+    }
+
+    // Set iq = 0 (no torque)
+    float iq_tow = 0.0f;
+
+    // Apply currents
+    id_ref = id_tow;
+    iq_ref = iq_tow;
+
+    // This nullifies back-EMF and prevents voltage buildup
+}
+```
+
+**Solution 2: Dynamic Braking Resistor**
+
+Hardware solution for emergency towing:
+
+```
+          VDC+
+           │
+           │  ┌────┐
+           ├──┤ Rdb├───┐  Dynamic Brake Resistor
+           │  └────┘   │
+           │          │
+      [Comparator]   IGBT/MOSFET (normally OFF)
+           │
+         Ground
+
+Operation:
+  1. Monitor DC bus voltage
+  2. If Vdc > Threshold (e.g., 450V for 400V system)
+  3. Turn ON brake IGBT
+  4. Dissipate energy in resistor
+  5. Turn OFF when Vdc < Threshold - Hysteresis
+
+Resistor sizing:
+  P_brake = (E_backemf)² / Rdb
+
+  Example:
+    E_max = 200V (line-to-line)
+    P_brake_target = 2kW
+
+    Rdb = (200)² / 2000 = 20Ω
+
+  Use: 20Ω, 3kW resistor (with derating)
+```
+
+**Solution 3: Mechanical Disconnect**
+
+For vehicles that may be towed frequently:
+
+```
+Options:
+  1. Manual disconnect switch (separates motor from inverter)
+  2. Electromagnetic clutch (decouples motor from wheels)
+  3. Freewheel mechanism in gearbox
+
+Pros:
+  - Complete isolation
+  - No controller power needed
+  - Safe for any towing speed
+
+Cons:
+  - Added mechanical complexity
+  - Cost
+  - May not be failsafe
+```
+
+**Safety Guidelines:**
+
+```
+1. Always provide towing instructions to user:
+   - Maximum towing speed (if no active FW)
+   - Whether controller must be ON
+   - Use of neutral/disconnect
+
+2. Implement towing mode in firmware:
+   - Automatic detection
+   - Active field weakening
+   - Log towing events
+
+3. Hardware protection:
+   - Dynamic brake resistor for emergency
+   - Overvoltage clamp (TVS diodes, varistors)
+   - Monitor DC bus voltage
+
+4. Testing:
+   - Simulate towing on dynamometer
+   - Test at maximum expected towing speed
+   - Verify voltage stays within safe limits
+   - Test with controller OFF (worst case)
+```
+
+**Towing Mode State Machine:**
+
+```c
+typedef enum {
+    NORMAL_OPERATION,
+    TOW_MODE_DETECTED,
+    TOW_MODE_ACTIVE,
+    TOW_MODE_OVERVOLTAGE,
+    TOW_MODE_ERROR
+} TowMode_State_t;
+
+TowMode_State_t tow_state = NORMAL_OPERATION;
+
+void tow_mode_state_machine() {
+    switch (tow_state) {
+        case NORMAL_OPERATION:
+            if (detect_tow_mode()) {
+                tow_state = TOW_MODE_DETECTED;
+                log_event(EVENT_TOW_DETECTED);
+            }
+            break;
+
+        case TOW_MODE_DETECTED:
+            // Give 1 second to confirm
+            if (tow_mode_confirmed()) {
+                tow_state = TOW_MODE_ACTIVE;
+                enable_tow_field_weakening();
+            }
+            else if (!detect_tow_mode()) {
+                tow_state = NORMAL_OPERATION;
+            }
+            break;
+
+        case TOW_MODE_ACTIVE:
+            // Actively weaken field
+            tow_mode_field_weakening();
+
+            // Monitor voltage
+            if (Vdc > V_OVERVOLTAGE_THRESHOLD) {
+                tow_state = TOW_MODE_OVERVOLTAGE;
+                engage_dynamic_brake();
+            }
+
+            // Exit condition
+            if (!detect_tow_mode()) {
+                tow_state = NORMAL_OPERATION;
+                disable_tow_field_weakening();
+            }
+            break;
+
+        case TOW_MODE_OVERVOLTAGE:
+            // Emergency braking active
+            if (Vdc < V_SAFE_THRESHOLD) {
+                tow_state = TOW_MODE_ACTIVE;
+                disengage_dynamic_brake();
+            }
+            break;
+
+        case TOW_MODE_ERROR:
+            // Fault condition
+            shutdown_inverter();
+            set_fault_code(FAULT_TOW_MODE_ERROR);
+            break;
+    }
+}
+```
+
+---
+
+### References for Section 1.4:
+
+**Papers:**
+1. "Over-Voltage Protection in Electric Vehicle Motor Drives" - SAE Technical Paper
+2. "Towing and Push-Starting Considerations for EVs" - IEEE VPPC
+
+**Standards:**
+1. **SAE J1772**: EV Conductive Charge Coupler (includes towing considerations)
+2. **ISO 6469-3**: Electric road vehicles - Safety specifications
+
+**Application Notes:**
+1. **Infineon**: "Overvoltage Protection for Motor Drives" (Application Note)
+2. **Littelfuse**: "TVS Diodes for Automotive Motor Protection" (AN9768)
+
+---
+
+### 1.5 Practical Implementation Guidelines
+
+**Step-by-Step Implementation:**
+
+```
+Phase 1: Characterization (1-2 weeks)
+  1. Measure motor parameters:
+     - Rs, Ld, Lq (impedance test)
+     - λm (back-EMF test)
+     - Thermal limits
+
+  2. Calculate base speed:
+     ω_base = V_limit / λm
+
+  3. Test MTPA region first (below base speed)
+     - Verify id = 0 operation
+     - Tune current loops
+     - Establish baseline performance
+
+Phase 2: Basic Field Weakening (1 week)
+  1. Implement Algorithm 1 (voltage-based FW)
+  2. Set conservative limits:
+     - Enter FW at 0.9 × ω_base
+     - Slow slew rates (50 A/s)
+  3. Test no-load operation through base speed
+  4. Verify smooth transition
+
+Phase 3: Optimization (2-3 weeks)
+  1. Tune transition thresholds
+  2. Optimize slew rates
+  3. Add voltage feedback (Algorithm 2)
+  4. Test with load
+  5. Measure efficiency vs. speed curve
+
+Phase 4: Safety and Protection (1-2 weeks)
+  1. Implement thermal monitoring
+  2. Add temperature-based derating
+  3. Implement towing mode
+  4. Test overvoltage protection
+  5. Validate all fault conditions
+
+Phase 5: Production Validation (2-4 weeks)
+  1. Environmental testing
+  2. Long-duration FW testing
+  3. Thermal cycling
+  4. EMC testing in FW mode
+  5. Safety certification
+```
+
+**Common Pitfalls and Solutions:**
+
+```
+1. Torque dip at transition:
+   Symptom: Noticeable jerk when entering FW
+   Cause: Sudden change in id command
+   Solution: Enter FW earlier (0.9× base speed), slower ramp
+
+2. Oscillation in FW:
+   Symptom: id, iq oscillate in FW region
+   Cause: PI gains too high, voltage feedback oscillation
+   Solution: Reduce Kp_fw, add low-pass filter
+
+3. Overshoot exiting FW:
+   Symptom: Torque spike when decelerating through base speed
+   Cause: Rapid id return to zero
+   Solution: Hysteresis, controlled ramp
+
+4. Overheating:
+   Symptom: Thermal shutdown in sustained FW
+   Cause: Continuous high current, inadequate cooling
+   Solution: Derate max FW speed, improve cooling
+
+5. Voltage limit oscillation:
+   Symptom: Controller bounces between MTPA and FW
+   Cause: Operating right at voltage limit
+   Solution: Add margin (0.9 × V_limit), hysteresis
+```
+
+**Performance Metrics:**
+
+```
+Success criteria for FW implementation:
+
+1. Speed range extension:
+   Target: 1.5-2.0× base speed achievable
+   Measure: Maximum sustainable speed under load
+
+2. Efficiency:
+   Target: >90% efficiency in FW region
+   Measure: Input power / Output power at various FW speeds
+
+3. Transition smoothness:
+   Target: <5% torque ripple at transition
+   Measure: Torque sensor or current waveform analysis
+
+4. Thermal performance:
+   Target: Sustained FW operation without overheating
+   Measure: Temperature stabilization test (30+ minutes)
+
+5. Voltage utilization:
+   Target: <95% of voltage limit (5% margin)
+   Measure: Peak voltage during FW operation
+```
+
+**Commissioning Checklist:**
+
+```
+☐ Motor parameters verified
+☐ Base speed calculated and validated
+☐ Current limits properly set
+☐ Voltage limits properly set (with margin)
+☐ Slew rate limits tuned
+☐ Transition thresholds optimized
+☐ PI gains tuned for FW stability
+☐ Temperature monitoring functional
+☐ Derating curves implemented
+☐ Towing mode tested
+☐ Overvoltage protection verified
+☐ Fault handling tested
+☐ Documentation complete
+☐ Safety review passed
+```
+
+---
+
+### References for Section 1.5:
+
+**Application Notes:**
+1. **Texas Instruments**: "PMSM Field Weakening Design Guide" (SPRABQ7)
+2. **STMicroelectronics**: "Motor Control Application Tuning" (UM2380)
+3. **Microchip**: "Sensorless Field Weakening Tuning" (AN1299)
+
+**Books:**
+1. *"Practical Variable Speed Drives and Power Electronics"* by Malcolm Barnes - Chapter on commissioning
+2. *"Electric Motor Drives: Modeling, Analysis, and Control"* by R. Krishnan - Implementation examples
+
+---
+
+**End of Section 1: Field Weakening Control**
+
+---
+
+## Section 2: Regenerative Braking Control
+
+Regenerative braking allows electric vehicles to recover kinetic energy during deceleration by operating the motor as a generator. This section covers the physics, control strategies, and practical implementation of regen braking systems.
+
+---
+
+### 2.1 Physics of Regenerative Braking
+
+#### Energy Flow and Power Conversion
+
+During regenerative braking, the motor transitions from motoring mode to generating mode. The kinetic energy of the vehicle is converted to electrical energy and returned to the battery.
+
+**Power Flow:**
+
+```
+Kinetic Energy → Mechanical Power → Electrical Power → Battery Energy
+     (Vehicle)      (Motor Shaft)     (DC Bus)         (Storage)
+```
+
+**Mathematical Foundation:**
+
+1. **Kinetic Energy of Vehicle:**
+```
+E_kinetic = (1/2) * m * v²
+
+Where:
+  m = vehicle mass (kg)
+  v = vehicle velocity (m/s)
+```
+
+2. **Power Available for Regeneration:**
+```
+P_regen = F_brake * v = (m * a) * v
+
+Where:
+  F_brake = braking force (N)
+  a = deceleration (m/s²)
+  v = vehicle velocity (m/s)
+```
+
+3. **Motor Torque During Regeneration:**
+```
+T_regen = F_brake * r_wheel / (G * η_drivetrain)
+
+Where:
+  r_wheel = wheel radius (m)
+  G = gear ratio
+  η_drivetrain = drivetrain efficiency (0.90-0.95)
+```
+
+4. **Electrical Power Generated:**
+```
+P_elec = T_regen * ω_m = (3/2) * P * (λ_m * i_q + (L_d - L_q) * i_d * i_q)
+
+Where:
+  ω_m = mechanical angular velocity (rad/s)
+  P = pole pairs
+  i_d, i_q = dq-axis currents (A)
+```
+
+**Back-EMF During Regeneration:**
+
+The motor generates voltage proportional to speed:
+
+```
+E_a = ω_e * λ_m = P * ω_m * λ_m
+
+Where:
+  ω_e = electrical angular velocity (rad/s)
+  λ_m = permanent magnet flux linkage (Wb)
+```
+
+For regeneration to occur, this back-EMF must be higher than the battery voltage (after accounting for inverter voltage drop):
+
+```
+E_a > V_battery + ΔV_inverter + ΔV_cable
+
+Minimum speed for regeneration:
+ω_min = (V_battery + ΔV_losses) / λ_m
+```
+
+#### Energy Efficiency Chain
+
+Not all kinetic energy can be recovered due to losses in the conversion chain:
+
+```
+η_total = η_mechanical × η_motor × η_inverter × η_battery
+
+Typical values:
+  η_mechanical = 0.95 (bearings, gears)
+  η_motor = 0.88-0.95 (copper, iron, stray losses)
+  η_inverter = 0.95-0.98 (switching, conduction)
+  η_battery = 0.90-0.95 (charging efficiency)
+
+Total: η_total = 0.75-0.85 (75-85% recovery)
+```
+
+**Loss Breakdown:**
+
+1. **Copper Losses (I²R):**
+```
+P_copper = (3/2) * R_s * (i_d² + i_q²)
+
+Where:
+  R_s = stator resistance (Ω)
+```
+
+2. **Iron Losses:**
+```
+P_iron = K_h * f_e * B² + K_e * f_e² * B²
+
+Where:
+  K_h = hysteresis loss coefficient
+  K_e = eddy current loss coefficient
+  f_e = electrical frequency (Hz)
+  B = flux density (T)
+```
+
+3. **Switching Losses:**
+```
+P_switch = f_sw * (E_on + E_off) + V_ce(sat) * I_avg
+
+Where:
+  f_sw = switching frequency (Hz)
+  E_on, E_off = turn-on/off energies (J)
+  V_ce(sat) = MOSFET on-state voltage (V)
+```
+
+#### Regenerative Braking Regions
+
+**Region Analysis:**
+
+1. **High Speed (ω > ω_base):**
+   - Field weakening may be active during motoring
+   - Transition to regen requires careful field control
+   - Maximum regen power available
+
+2. **Medium Speed (ω_min < ω < ω_base):**
+   - Optimal regen region
+   - Full torque capability
+   - Best efficiency
+
+3. **Low Speed (ω < ω_min):**
+   - Back-EMF < V_battery
+   - Regen not possible
+   - Must transition to friction brakes
+
+**Implementation Consideration:**
+
+```c
+// Calculate regenerative braking capability
+float calculate_regen_capability(float omega_mech, float V_battery) {
+    // Back-EMF calculation
+    float E_backemf = POLE_PAIRS * omega_mech * FLUX_LINKAGE;
+
+    // Required margin above battery voltage
+    float V_required = V_battery + V_INVERTER_DROP + V_CABLE_DROP;
+
+    if (E_backemf < V_required) {
+        // Cannot regenerate - back-EMF too low
+        return 0.0f;
+    }
+
+    // Calculate available voltage margin
+    float V_margin = E_backemf - V_required;
+
+    // Regen capability (0.0 to 1.0)
+    float capability = fminf(1.0f, V_margin / V_MARGIN_NOMINAL);
+
+    return capability;
+}
+```
+
+---
+
+### References for Section 2.1:
+
+**Books:**
+1. *"Electric Powertrain: Energy Systems, Power Electronics and Drives for Hybrid, Electric and Fuel Cell Vehicles"* by John G. Hayes and G. Abas Goodarzi - Chapter 3 (Energy Management)
+2. *"Modern Electric, Hybrid Electric, and Fuel Cell Vehicles"* by Mehrdad Ehsani et al. - Chapter 5 (Regenerative Braking)
+3. *"Electric and Hybrid Vehicles: Design Fundamentals"* by Iqbal Husain - Chapter 8 (Energy Storage and Management)
+
+**Papers:**
+1. Gao, Y., & Ehsani, M. (2001). "Electronic Braking System of EV and HEV—Integration of Regenerative Braking, Automatic Braking Force Control and ABS." SAE Technical Paper 2001-01-2478.
+2. Bender, F. A., et al. (2013). "On the Influence of Rotational Inertia on the Energy Efficiency of Electric Vehicles." IEEE Vehicle Power and Propulsion Conference.
+
+**Application Notes:**
+1. **Texas Instruments**: "Regenerative Braking in Electric Vehicles" (SLVA672)
+2. **Infineon**: "Regenerative Energy Recovery in Motor Drives" (AN2020-06)
+
+---
+
+### 2.2 Motor Behavior During Regeneration
+
+#### Torque-Speed Characteristics in Generator Mode
+
+When operating as a generator, the motor's torque-speed curve mirrors the motoring curve but in the negative torque quadrant.
+
+**Four-Quadrant Operation:**
+
+```
+    Torque
+      ↑
+Q2    |    Q1
+(-T,+ω)|(+T,+ω)
+      |
+------+------→ Speed
+      |
+Q3    |    Q4
+(-T,-ω)|(+T,-ω)
+      |
+```
+
+- **Q1**: Forward motoring (acceleration)
+- **Q2**: Forward regeneration (forward motion, braking)
+- **Q3**: Reverse motoring (reverse acceleration)
+- **Q4**: Reverse regeneration (reverse motion, braking)
+
+**Torque Production in Regen:**
+
+The torque equation is the same for both motoring and generating:
+
+```
+T_e = (3/2) * P * (λ_m * i_q + (L_d - L_q) * i_d * i_q)
+```
+
+The key difference is the sign of i_q:
+- **Motoring**: i_q > 0 (current in phase with back-EMF)
+- **Regenerating**: i_q < 0 (current opposes back-EMF)
+
+#### Current Vector Control During Regen
+
+**dq-Axis Current Commands:**
+
+```c
+// Regenerative braking current control
+void calculate_regen_currents(float T_regen_cmd, float omega_mech,
+                               float *id_ref, float *iq_ref) {
+    float omega_elec = POLE_PAIRS * omega_mech;
+
+    // For surface-mounted PMSM (Ld ≈ Lq), use MTPA strategy
+    // In regen, this is still i_d = 0 for maximum efficiency
+    *id_ref = 0.0f;
+
+    // Negative i_q for regeneration
+    *iq_ref = -(2.0f * T_regen_cmd) / (3.0f * POLE_PAIRS * FLUX_LINKAGE);
+
+    // Check if field weakening is needed
+    // Even in regen, at high speed, FW may be required
+    float V_available = V_DC_BUS * 0.866f;  // Max modulation index
+    float V_required = sqrtf(powf(omega_elec * FLUX_LINKAGE, 2) +
+                             powf(omega_elec * L_Q * (*iq_ref), 2));
+
+    if (V_required > V_available) {
+        // Apply field weakening for regen at high speed
+        apply_field_weakening_regen(omega_elec, V_available, id_ref, iq_ref);
+    }
+
+    // Current limiting
+    float i_total = sqrtf((*id_ref) * (*id_ref) + (*iq_ref) * (*iq_ref));
+    if (i_total > I_MAX) {
+        float scale = I_MAX / i_total;
+        *id_ref *= scale;
+        *iq_ref *= scale;
+    }
+}
+```
+
+#### Voltage and Current Phase Relationships
+
+**In Motoring Mode:**
+```
+i_q in phase with back-EMF → Power from battery to motor
+```
+
+**In Regenerating Mode:**
+```
+i_q opposes back-EMF → Power from motor to battery
+```
+
+**Phase Diagram:**
+
+```
+        d-axis
+          ↑
+          |
+          |    θ_e (rotor position)
+          |   /
+          |  /
+          | /
+----------+----------→ q-axis
+          |
+          |
+     Back-EMF (E_a)
+
+Motoring:   I_s leads E_a by angle (φ < 90°)
+Generating: I_s lags E_a by angle (φ > 90°)
+
+Where:
+  I_s = stator current vector
+  φ = power factor angle
+```
+
+#### Flux Weakening During High-Speed Regen
+
+Just like motoring, regeneration at high speeds requires field weakening to stay within voltage limits.
+
+**Field Weakening Regen Strategy:**
+
+```c
+void apply_field_weakening_regen(float omega_elec, float V_limit,
+                                  float *id_ref, float *iq_ref) {
+    // Characteristic current
+    float I_ch = FLUX_LINKAGE / L_D;
+
+    // Calculate negative i_d needed to reduce flux
+    *id_ref = -I_ch + (V_limit / (omega_elec * L_D));
+
+    // Ensure we don't exceed current limit
+    float id_squared = (*id_ref) * (*id_ref);
+    float I_limit_squared = I_MAX * I_MAX;
+
+    if (id_squared < I_limit_squared) {
+        // Calculate maximum allowable i_q (negative for regen)
+        float iq_max = sqrtf(I_limit_squared - id_squared);
+
+        // Use negative value for regeneration
+        if (*iq_ref < -iq_max) {
+            *iq_ref = -iq_max;
+        }
+    }
+    else {
+        // All current used for field weakening
+        *id_ref = -I_MAX;
+        *iq_ref = 0.0f;
+    }
+}
+```
+
+#### Transition from Motoring to Regeneration
+
+The transition from positive torque (acceleration) to negative torque (braking) must be smooth to avoid jerky vehicle behavior.
+
+**Smooth Transition Algorithm:**
+
+```c
+#define REGEN_TRANSITION_RATE  50.0f  // Nm/s
+
+typedef struct {
+    float torque_current;     // Current torque command
+    float torque_target;      // Target torque command
+    float transition_rate;    // Rate of change (Nm/s)
+} RegenTransition_t;
+
+void update_regen_transition(RegenTransition_t *trans, float dt) {
+    // Calculate error
+    float error = trans->torque_target - trans->torque_current;
+
+    // Rate limit the transition
+    float max_change = trans->transition_rate * dt;
+
+    if (fabsf(error) < max_change) {
+        trans->torque_current = trans->torque_target;
+    }
+    else if (error > 0.0f) {
+        trans->torque_current += max_change;
+    }
+    else {
+        trans->torque_current -= max_change;
+    }
+}
+
+// Usage in main control loop
+void motor_control_loop(float T_cmd_user, float dt) {
+    static RegenTransition_t transition = {
+        .torque_current = 0.0f,
+        .torque_target = 0.0f,
+        .transition_rate = REGEN_TRANSITION_RATE
+    };
+
+    // Update target from user command
+    transition.torque_target = T_cmd_user;
+
+    // Smooth transition
+    update_regen_transition(&transition, dt);
+
+    // Use smoothed torque for current calculation
+    if (transition.torque_current >= 0.0f) {
+        // Motoring mode
+        calculate_motoring_currents(transition.torque_current, &id_ref, &iq_ref);
+    }
+    else {
+        // Regeneration mode
+        calculate_regen_currents(-transition.torque_current, omega_mech, &id_ref, &iq_ref);
+    }
+}
+```
+
+#### Thermal Considerations During Regen
+
+During regeneration, the motor and inverter still experience losses, even though power flows back to the battery.
+
+**Loss Distribution:**
+
+1. **Motor Losses:**
+   - Copper losses: I²R (same magnitude as motoring for same current)
+   - Iron losses: May be higher due to higher flux density if FW not properly managed
+   - Mechanical losses: Same as motoring
+
+2. **Inverter Losses:**
+   - Conduction losses: Same as motoring
+   - Switching losses: Slightly different due to reverse current direction through body diodes
+
+**Thermal Management Code:**
+
+```c
+// Calculate total losses during regeneration
+float calculate_regen_losses(float id, float iq, float omega_elec) {
+    // Copper losses
+    float P_copper = 1.5f * R_STATOR * (id*id + iq*iq);
+
+    // Iron losses (simplified Steinmetz equation)
+    float f_elec = omega_elec / (2.0f * M_PI);
+    float B_peak = FLUX_LINKAGE / AREA_FLUX_PATH;
+    float P_iron = K_HYSTERESIS * f_elec * B_peak * B_peak +
+                   K_EDDY * f_elec * f_elec * B_peak * B_peak;
+
+    // Mechanical losses
+    float P_mech = K_FRICTION * omega_elec + K_WINDAGE * omega_elec * omega_elec;
+
+    // Inverter losses (conduction + switching)
+    float I_rms = sqrtf(id*id + iq*iq);
+    float P_inverter = 3.0f * (RDS_ON * I_rms * I_rms +
+                              F_SWITCHING * (E_ON + E_OFF));
+
+    return P_copper + P_iron + P_mech + P_inverter;
+}
+```
+
+---
+
+### References for Section 2.2:
+
+**Books:**
+1. *"Advanced Electric Drives: Analysis, Control, and Modeling Using MATLAB/Simulink"* by Ned Mohan and Siddharth Raju - Chapter 6 (Four-Quadrant Operation)
+2. *"Vector Control and Dynamics of AC Drives"* by D.W. Novotny and T.A. Lipo - Chapter 12 (Generating Mode)
+
+**Papers:**
+1. Jung, D., et al. (2012). "Regenerative Braking Control Strategy Based on Field Oriented Control in Interior Permanent Magnet Synchronous Motor Drives." International Journal of Automotive Technology, 13(4), 603-609.
+2. Patel, H., & Chandorkar, M. C. (2013). "Analysis of Regenerative Braking in PMSM Drives." IEEE PEDES Conference.
+
+**Application Notes:**
+1. **Analog Devices**: "Four-Quadrant Operation of PMSM Motors" (AN-1378)
+2. **NXP Semiconductors**: "Motor Control Field Oriented Control"  (AN12444)
+
+---
+
+### 2.3 Regen Control Strategies
+
+This section covers different control strategies for managing regenerative braking, from simple voltage-based control to advanced torque blending algorithms.
+
+#### Strategy 1: Fixed Regen Current Limiting
+
+The simplest strategy limits regenerative current to a fixed value based on battery and motor capabilities.
+
+**Implementation:**
+
+```c
+#define REGEN_CURRENT_LIMIT  100.0f  // Maximum regen current (A)
+
+float calculate_regen_torque_limited(float T_cmd, float omega_mech) {
+    // Convert torque command to i_q
+    float iq_required = -(2.0f * fabsf(T_cmd)) / (3.0f * POLE_PAIRS * FLUX_LINKAGE);
+
+    // Limit to maximum regen current
+    if (iq_required > REGEN_CURRENT_LIMIT) {
+        iq_required = REGEN_CURRENT_LIMIT;
+    }
+
+    // Convert back to torque
+    float T_regen_actual = -(3.0f / 2.0f) * POLE_PAIRS * FLUX_LINKAGE * iq_required;
+
+    return T_regen_actual;
+}
+```
+
+**Advantages:**
+- Simple to implement
+- Protects motor and battery from overcurrent
+- Predictable behavior
+
+**Disadvantages:**
+- Does not account for battery SOC
+- May not optimize energy recovery
+- Fixed limit may be too conservative
+
+---
+
+#### Strategy 2: Battery SOC-Dependent Regen Control
+
+This strategy adjusts regen power based on battery State of Charge (SOC) to prevent overcharging.
+
+**SOC-Based Scaling:**
+
+```c
+typedef struct {
+    float soc_full_limit;      // SOC above which regen is limited (e.g., 0.90)
+    float soc_no_regen;        // SOC above which regen is disabled (e.g., 0.98)
+    float power_max_regen;     // Maximum regen power at low SOC (W)
+} RegenSOCParams_t;
+
+float calculate_regen_power_soc_limited(float SOC, RegenSOCParams_t *params) {
+    if (SOC >= params->soc_no_regen) {
+        // Battery is full - no regen allowed
+        return 0.0f;
+    }
+    else if (SOC >= params->soc_full_limit) {
+        // Linearly reduce regen power as SOC increases
+        float scale = (params->soc_no_regen - SOC) /
+                     (params->soc_no_regen - params->soc_full_limit);
+        return params->power_max_regen * scale;
+    }
+    else {
+        // Below limit - full regen power available
+        return params->power_max_regen;
+    }
+}
+
+// Usage in control loop
+void apply_soc_limited_regen(float T_cmd, float omega_mech, float SOC) {
+    static RegenSOCParams_t soc_params = {
+        .soc_full_limit = 0.90f,
+        .soc_no_regen = 0.98f,
+        .power_max_regen = 30000.0f  // 30 kW
+    };
+
+    // Calculate available regen power based on SOC
+    float P_regen_available = calculate_regen_power_soc_limited(SOC, &soc_params);
+
+    // Calculate maximum regen torque at current speed
+    float T_regen_max = P_regen_available / fabsf(omega_mech);
+
+    // Limit commanded torque
+    float T_regen_actual = fmaxf(T_cmd, -T_regen_max);
+
+    // Calculate dq currents
+    calculate_regen_currents(-T_regen_actual, omega_mech, &id_ref, &iq_ref);
+}
+```
+
+---
+
+#### Strategy 3: Voltage-Based Regen Control
+
+This strategy monitors DC bus voltage and reduces regen if the voltage rises too high, which can happen when the battery cannot accept all the regen power.
+
+**DC Bus Voltage Monitoring:**
+
+```c
+#define V_DC_NOMINAL       400.0f   // Nominal DC bus voltage (V)
+#define V_DC_MAX_NORMAL    430.0f   // Start reducing regen (V)
+#define V_DC_MAX_CRITICAL  450.0f   // Stop all regen (V)
+#define V_DC_OVERVOLTAGE   470.0f   // Trigger fault (V)
+
+typedef struct {
+    float voltage_current;         // Measured DC bus voltage
+    float voltage_max_normal;      // Voltage to start reducing regen
+    float voltage_max_critical;    // Voltage to stop regen
+    float voltage_overvoltage;     // Fault threshold
+    float regen_scale;             // Output: regen scaling factor (0-1)
+    bool fault_active;             // Output: overvoltage fault flag
+} RegenVoltageControl_t;
+
+void update_regen_voltage_control(RegenVoltageControl_t *ctrl) {
+    if (ctrl->voltage_current >= ctrl->voltage_overvoltage) {
+        // Critical overvoltage - trigger fault
+        ctrl->fault_active = true;
+        ctrl->regen_scale = 0.0f;
+    }
+    else if (ctrl->voltage_current >= ctrl->voltage_max_critical) {
+        // Above critical - no regen allowed
+        ctrl->fault_active = false;
+        ctrl->regen_scale = 0.0f;
+    }
+    else if (ctrl->voltage_current >= ctrl->voltage_max_normal) {
+        // Linearly reduce regen between normal and critical
+        ctrl->fault_active = false;
+        float range = ctrl->voltage_max_critical - ctrl->voltage_max_normal;
+        float excess = ctrl->voltage_current - ctrl->voltage_max_normal;
+        ctrl->regen_scale = 1.0f - (excess / range);
+    }
+    else {
+        // Below threshold - full regen allowed
+        ctrl->fault_active = false;
+        ctrl->regen_scale = 1.0f;
+    }
+}
+```
+
+**Integration with Torque Control:**
+
+```c
+void apply_voltage_limited_regen(float T_cmd, float V_dc) {
+    static RegenVoltageControl_t voltage_ctrl = {
+        .voltage_max_normal = V_DC_MAX_NORMAL,
+        .voltage_max_critical = V_DC_MAX_CRITICAL,
+        .voltage_overvoltage = V_DC_OVERVOLTAGE
+    };
+
+    // Update voltage control
+    voltage_ctrl.voltage_current = V_dc;
+    update_regen_voltage_control(&voltage_ctrl);
+
+    // Check for fault
+    if (voltage_ctrl.fault_active) {
+        // Trigger fault handler
+        trigger_overvoltage_fault();
+        T_cmd = 0.0f;
+    }
+    else {
+        // Scale regen torque based on voltage
+        if (T_cmd < 0.0f) {  // Regen torque is negative
+            T_cmd *= voltage_ctrl.regen_scale;
+        }
+    }
+
+    // Calculate currents with voltage-limited torque
+    calculate_regen_currents(-T_cmd, omega_mech, &id_ref, &iq_ref);
+}
+```
+
+---
+
+#### Strategy 4: Temperature-Based Regen Limiting
+
+Regen capability should be reduced at high temperatures to prevent thermal damage.
+
+**Multi-Source Temperature Monitoring:**
+
+```c
+typedef struct {
+    float T_motor;           // Motor temperature (°C)
+    float T_inverter;        // Inverter temperature (°C)
+    float T_battery;         // Battery temperature (°C)
+    float T_motor_limit;     // Motor temperature limit
+    float T_inverter_limit;  // Inverter temperature limit
+    float T_battery_limit;   // Battery temperature limit
+    float regen_scale;       // Output: combined regen scaling
+} RegenThermalControl_t;
+
+void update_regen_thermal_control(RegenThermalControl_t *ctrl) {
+    float scale_motor = 1.0f;
+    float scale_inverter = 1.0f;
+    float scale_battery = 1.0f;
+
+    // Motor temperature derating
+    if (ctrl->T_motor > ctrl->T_motor_limit) {
+        float excess = ctrl->T_motor - ctrl->T_motor_limit;
+        scale_motor = fmaxf(0.0f, 1.0f - (excess / 20.0f));  // Linear derate over 20°C
+    }
+
+    // Inverter temperature derating
+    if (ctrl->T_inverter > ctrl->T_inverter_limit) {
+        float excess = ctrl->T_inverter - ctrl->T_inverter_limit;
+        scale_inverter = fmaxf(0.0f, 1.0f - (excess / 25.0f));  // Linear derate over 25°C
+    }
+
+    // Battery temperature derating
+    if (ctrl->T_battery > ctrl->T_battery_limit) {
+        float excess = ctrl->T_battery - ctrl->T_battery_limit;
+        scale_battery = fmaxf(0.0f, 1.0f - (excess / 15.0f));  // Linear derate over 15°C
+    }
+
+    // Use the most restrictive limit
+    ctrl->regen_scale = fminf(scale_motor, fminf(scale_inverter, scale_battery));
+}
+```
+
+---
+
+#### Strategy 5: Combined Multi-Factor Regen Control
+
+The most robust strategy combines all the above factors (current, SOC, voltage, temperature) into a comprehensive regen management system.
+
+**Master Regen Controller:**
+
+```c
+typedef struct {
+    // Input parameters
+    float SOC;                      // Battery state of charge (0-1)
+    float V_dc;                     // DC bus voltage (V)
+    float T_motor;                  // Motor temperature (°C)
+    float T_inverter;               // Inverter temperature (°C)
+    float T_battery;                // Battery temperature (°C)
+    float omega_mech;               // Motor speed (rad/s)
+
+    // Limits
+    float I_regen_max;              // Maximum regen current (A)
+    float P_regen_max;              // Maximum regen power (W)
+
+    // Sub-controllers
+    RegenSOCParams_t soc_ctrl;
+    RegenVoltageControl_t voltage_ctrl;
+    RegenThermalControl_t thermal_ctrl;
+
+    // Outputs
+    float regen_scale_combined;     // Combined scaling factor (0-1)
+    float T_regen_max;              // Maximum allowed regen torque (Nm)
+} MasterRegenControl_t;
+
+void update_master_regen_control(MasterRegenControl_t *master) {
+    // 1. Calculate SOC-based power limit
+    float P_soc_limited = calculate_regen_power_soc_limited(master->SOC,
+                                                            &master->soc_ctrl);
+
+    // 2. Update voltage-based scaling
+    master->voltage_ctrl.voltage_current = master->V_dc;
+    update_regen_voltage_control(&master->voltage_ctrl);
+    float scale_voltage = master->voltage_ctrl.regen_scale;
+
+    // 3. Update thermal scaling
+    master->thermal_ctrl.T_motor = master->T_motor;
+    master->thermal_ctrl.T_inverter = master->T_inverter;
+    master->thermal_ctrl.T_battery = master->T_battery;
+    update_regen_thermal_control(&master->thermal_ctrl);
+    float scale_thermal = master->thermal_ctrl.regen_scale;
+
+    // 4. Combine all scaling factors (use most restrictive)
+    float scale_combined = fminf(scale_voltage, scale_thermal);
+
+    // 5. Calculate maximum regen power
+    float P_max = fminf(P_soc_limited * scale_combined, master->P_regen_max);
+
+    // 6. Convert to maximum torque at current speed
+    if (fabsf(master->omega_mech) > 0.1f) {
+        master->T_regen_max = P_max / fabsf(master->omega_mech);
+    }
+    else {
+        // At very low speed, use current limit
+        float iq_max = master->I_regen_max;
+        master->T_regen_max = (3.0f / 2.0f) * POLE_PAIRS * FLUX_LINKAGE * iq_max;
+    }
+
+    // 7. Store combined scale for telemetry
+    master->regen_scale_combined = scale_combined;
+}
+
+// Usage in main control loop
+void motor_control_with_regen_management(float T_cmd_user) {
+    static MasterRegenControl_t regen_master = {
+        .I_regen_max = 150.0f,
+        .P_regen_max = 50000.0f,  // 50 kW max
+        .soc_ctrl = {
+            .soc_full_limit = 0.90f,
+            .soc_no_regen = 0.98f,
+            .power_max_regen = 50000.0f
+        },
+        .voltage_ctrl = {
+            .voltage_max_normal = 430.0f,
+            .voltage_max_critical = 450.0f,
+            .voltage_overvoltage = 470.0f
+        },
+        .thermal_ctrl = {
+            .T_motor_limit = 120.0f,
+            .T_inverter_limit = 85.0f,
+            .T_battery_limit = 50.0f
+        }
+    };
+
+    // Update regen master controller
+    regen_master.SOC = read_battery_soc();
+    regen_master.V_dc = read_dc_bus_voltage();
+    regen_master.T_motor = read_motor_temperature();
+    regen_master.T_inverter = read_inverter_temperature();
+    regen_master.T_battery = read_battery_temperature();
+    regen_master.omega_mech = read_motor_speed();
+
+    update_master_regen_control(&regen_master);
+
+    // Apply regen torque limit
+    float T_cmd_limited = T_cmd_user;
+    if (T_cmd_user < 0.0f) {  // Regen is negative torque
+        T_cmd_limited = fmaxf(T_cmd_user, -regen_master.T_regen_max);
+    }
+
+    // Calculate dq currents
+    if (T_cmd_limited >= 0.0f) {
+        calculate_motoring_currents(T_cmd_limited, &id_ref, &iq_ref);
+    }
+    else {
+        calculate_regen_currents(-T_cmd_limited, regen_master.omega_mech,
+                                &id_ref, &iq_ref);
+    }
+}
+```
+
+---
+
+### References for Section 2.3:
+
+**Books:**
+1. *"Battery Management Systems for Large Lithium-Ion Battery Packs"* by Davide Andrea - Chapter 8 (Charging and Protection)
+2. *"Electric and Hybrid Vehicles: Technologies, Modeling and Control"* by Amir Khajepour et al. - Chapter 6 (Energy Management Strategies)
+
+**Papers:**
+1. Gao, Y., Chen, L., & Ehsani, M. (1999). "Investigation of the Effectiveness of Regenerative Braking for EV and HEV." SAE Technical Paper 1999-01-2910.
+2. Yeo, H., & Kim, H. (2002). "Hardware-in-the-Loop Simulation of Regenerative Braking for a Hybrid Electric Vehicle." Journal of Automobile Engineering, 216(11), 855-864.
+
+**Application Notes:**
+1. **Texas Instruments**: "Battery Management System Design Considerations" (SLUA915)
+2. **STMicroelectronics**: "Regenerative Braking Implementation in PMSM Drives" (AN4993)
+
+---
+
+### 2.4 Battery Management During Regeneration
+
+This section addresses a critical question: **What happens to regen energy when the battery is full?**
+
+When the battery reaches its maximum State of Charge (SOC), it cannot safely accept additional charge current. If regen energy continues to flow into the battery, it can lead to:
+
+1. **Overvoltage**: DC bus voltage rises above safe limits
+2. **Battery damage**: Overcharging reduces battery life and can cause thermal runaway
+3. **System fault**: Controller shutdown due to overvoltage protection
+
+#### Battery Charge Acceptance
+
+**C-Rate and Charge Acceptance:**
+
+Battery charge acceptance depends on:
+- **Current SOC**: Higher SOC → Lower acceptance
+- **Temperature**: Cold batteries accept less charge
+- **Battery chemistry**: Different chemistries have different limits
+- **Battery age**: Older batteries accept less charge
+
+**Charge Acceptance Model:**
+
+```c
+typedef struct {
+    float SOC;                  // Current state of charge (0-1)
+    float T_battery;            // Battery temperature (°C)
+    float I_charge_max_cell;    // Maximum cell charge current (A)
+    float num_parallel;         // Number of cells in parallel
+    float derating_soc;         // SOC derating factor
+    float derating_temp;        // Temperature derating factor
+} BatteryChargeModel_t;
+
+float calculate_charge_acceptance(BatteryChargeModel_t *batt) {
+    // 1. SOC-based derating
+    if (batt->SOC < 0.80f) {
+        batt->derating_soc = 1.0f;  // Full charge rate
+    }
+    else if (batt->SOC < 0.90f) {
+        // Linear taper from 80% to 90%
+        batt->derating_soc = 1.0f - ((batt->SOC - 0.80f) / 0.10f) * 0.5f;
+    }
+    else if (batt->SOC < 0.98f) {
+        // Aggressive taper from 90% to 98%
+        batt->derating_soc = 0.5f - ((batt->SOC - 0.90f) / 0.08f) * 0.5f;
+    }
+    else {
+        // No charging above 98%
+        batt->derating_soc = 0.0f;
+    }
+
+    // 2. Temperature-based derating
+    if (batt->T_battery < -10.0f) {
+        // Very cold - minimal charging
+        batt->derating_temp = 0.1f;
+    }
+    else if (batt->T_battery < 0.0f) {
+        // Cold - reduced charging
+        batt->derating_temp = 0.1f + (batt->T_battery + 10.0f) / 10.0f * 0.4f;
+    }
+    else if (batt->T_battery < 15.0f) {
+        // Cool - partial charging
+        batt->derating_temp = 0.5f + (batt->T_battery / 15.0f) * 0.5f;
+    }
+    else if (batt->T_battery < 45.0f) {
+        // Optimal range
+        batt->derating_temp = 1.0f;
+    }
+    else if (batt->T_battery < 55.0f) {
+        // Hot - reduce charging
+        batt->derating_temp = 1.0f - ((batt->T_battery - 45.0f) / 10.0f) * 0.5f;
+    }
+    else {
+        // Very hot - minimal charging
+        batt->derating_temp = 0.5f - ((batt->T_battery - 55.0f) / 10.0f) * 0.5f;
+        batt->derating_temp = fmaxf(0.0f, batt->derating_temp);
+    }
+
+    // 3. Calculate total acceptable current
+    float I_max_pack = batt->I_charge_max_cell * batt->num_parallel;
+    float I_acceptable = I_max_pack * batt->derating_soc * batt->derating_temp;
+
+    return I_acceptable;
+}
+```
+
+#### Managing Full Battery: Solution Strategies
+
+When the battery is full or near full, the system must manage regen energy using one or more of these strategies:
+
+---
+
+**Strategy 1: Gradual Regen Reduction (Preferred)**
+
+Smoothly reduce regen power as the battery approaches full charge.
+
+```c
+void manage_full_battery_gradual(float *T_regen_cmd, BatteryChargeModel_t *batt) {
+    // Calculate how much current the battery can accept
+    float I_acceptable = calculate_charge_acceptance(batt);
+
+    // Convert to power limit
+    float V_battery = read_battery_voltage();
+    float P_acceptable = I_acceptable * V_battery;
+
+    // Convert to torque limit
+    float omega_mech = read_motor_speed();
+    float T_regen_max = P_acceptable / fabsf(omega_mech);
+
+    // Apply limit
+    if (fabsf(*T_regen_cmd) > T_regen_max) {
+        *T_regen_cmd = -T_regen_max;  // Regen is negative torque
+
+        // Log event for user notification
+        log_regen_limited_battery_full();
+    }
+}
+```
+
+---
+
+**Strategy 2: Transition to Friction Brakes**
+
+When regen is no longer available, seamlessly blend to friction brakes.
+
+```c
+typedef struct {
+    float brake_force_total;       // Total desired braking force (N)
+    float brake_force_regen;       // Regen braking force (N)
+    float brake_force_friction;    // Friction braking force (N)
+    float regen_capability;        // Regen capability (0-1)
+} BrakeBlending_t;
+
+void blend_regen_to_friction(BrakeBlending_t *blend, float SOC) {
+    // Determine regen capability based on SOC
+    if (SOC < 0.90f) {
+        blend->regen_capability = 1.0f;
+    }
+    else if (SOC < 0.98f) {
+        blend->regen_capability = (0.98f - SOC) / 0.08f;
+    }
+    else {
+        blend->regen_capability = 0.0f;
+    }
+
+    // Calculate regen and friction contributions
+    blend->brake_force_regen = blend->brake_force_total * blend->regen_capability;
+    blend->brake_force_friction = blend->brake_force_total - blend->brake_force_regen;
+
+    // Apply regen braking
+    float T_regen = calculate_torque_from_force(blend->brake_force_regen);
+    apply_regen_torque(T_regen);
+
+    // Apply friction braking
+    apply_friction_brakes(blend->brake_force_friction);
+}
+```
+
+---
+
+**Strategy 3: Dynamic Brake Resistor (Hardware Solution)**
+
+For systems with a dynamic brake resistor (DBR), excess regen energy can be dissipated as heat.
+
+```c
+#define DBR_VOLTAGE_ENABLE    430.0f  // Enable DBR (V)
+#define DBR_VOLTAGE_DISABLE   410.0f  // Disable DBR (V)
+#define DBR_DUTY_MIN          0.0f
+#define DBR_DUTY_MAX          1.0f
+
+typedef struct {
+    float V_dc;                 // DC bus voltage (V)
+    float V_enable;             // Voltage to enable DBR
+    float V_disable;            // Voltage to disable DBR (hysteresis)
+    float duty_cycle;           // DBR PWM duty cycle (0-1)
+    bool enabled;               // DBR active flag
+} DynamicBrakeResistor_t;
+
+void update_dynamic_brake_resistor(DynamicBrakeResistor_t *dbr) {
+    // Hysteresis control
+    if (dbr->V_dc > dbr->V_enable) {
+        dbr->enabled = true;
+    }
+    else if (dbr->V_dc < dbr->V_disable) {
+        dbr->enabled = false;
+    }
+
+    if (dbr->enabled) {
+        // PI controller for voltage regulation
+        float V_error = dbr->V_dc - dbr->V_disable;
+        static float integral = 0.0f;
+
+        float Kp = 0.01f;  // Proportional gain
+        float Ki = 0.5f;   // Integral gain
+
+        integral += V_error * DT;
+        integral = fmaxf(0.0f, fminf(10.0f, integral));  // Anti-windup
+
+        dbr->duty_cycle = Kp * V_error + Ki * integral;
+        dbr->duty_cycle = fmaxf(DBR_DUTY_MIN, fminf(DBR_DUTY_MAX, dbr->duty_cycle));
+
+        // Apply PWM to DBR
+        set_dbr_pwm(dbr->duty_cycle);
+    }
+    else {
+        dbr->duty_cycle = 0.0f;
+        set_dbr_pwm(0.0f);
+
+        // Reset integral
+        static float integral = 0.0f;
+        integral = 0.0f;
+    }
+}
+```
+
+**DBR Thermal Management:**
+
+```c
+// Monitor DBR temperature and derate if needed
+float calculate_dbr_power_limit(float T_dbr, float T_max) {
+    if (T_dbr < T_max - 20.0f) {
+        return 1.0f;  // Full power
+    }
+    else if (T_dbr < T_max) {
+        // Linear derate over 20°C
+        return (T_max - T_dbr) / 20.0f;
+    }
+    else {
+        return 0.0f;  // Disable DBR
+    }
+}
+```
+
+---
+
+**Strategy 4: Limit Vehicle Deceleration**
+
+If neither friction brakes nor DBR can handle the excess energy, limit the vehicle's deceleration rate.
+
+```c
+typedef struct {
+    float decel_requested;      // Driver-requested deceleration (m/s²)
+    float decel_max_regen;      // Max deceleration from available regen (m/s²)
+    float decel_max_friction;   // Max deceleration from friction brakes (m/s²)
+    float decel_actual;         // Actual applied deceleration (m/s²)
+} DecelLimiting_t;
+
+void apply_deceleration_limiting(DecelLimiting_t *decel) {
+    // Total available deceleration
+    float decel_available = decel->decel_max_regen + decel->decel_max_friction;
+
+    if (decel->decel_requested <= decel_available) {
+        // Can meet driver request
+        decel->decel_actual = decel->decel_requested;
+    }
+    else {
+        // Cannot meet request - limit deceleration
+        decel->decel_actual = decel_available;
+
+        // Notify driver (visual/haptic feedback)
+        notify_decel_limited();
+    }
+}
+```
+
+---
+
+#### Integrated Battery Management System
+
+A complete system integrates all strategies:
+
+```c
+typedef enum {
+    BATTERY_REGEN_FULL,         // Full regen available
+    BATTERY_REGEN_LIMITED,      // Regen limited by SOC/temp
+    BATTERY_REGEN_BLENDING,     // Blending regen + friction
+    BATTERY_REGEN_FRICTION_ONLY, // Friction brakes only
+    BATTERY_REGEN_DBR_ACTIVE    // DBR dissipating energy
+} BatteryRegenState_t;
+
+typedef struct {
+    BatteryChargeModel_t battery;
+    BrakeBlending_t blending;
+    DynamicBrakeResistor_t dbr;
+    DecelLimiting_t decel_limit;
+    BatteryRegenState_t state;
+    float regen_power_limit;    // Output: max regen power (W)
+} IntegratedBatteryMgmt_t;
+
+void update_integrated_battery_management(IntegratedBatteryMgmt_t *mgmt,
+                                          float T_regen_request) {
+    // 1. Calculate battery charge acceptance
+    float I_acceptable = calculate_charge_acceptance(&mgmt->battery);
+    float V_battery = read_battery_voltage();
+    mgmt->regen_power_limit = I_acceptable * V_battery;
+
+    // 2. Determine state
+    if (mgmt->battery.SOC < 0.85f) {
+        mgmt->state = BATTERY_REGEN_FULL;
+    }
+    else if (mgmt->battery.SOC < 0.95f) {
+        mgmt->state = BATTERY_REGEN_LIMITED;
+    }
+    else if (mgmt->battery.SOC < 0.98f) {
+        mgmt->state = BATTERY_REGEN_BLENDING;
+    }
+    else {
+        if (mgmt->dbr.enabled) {
+            mgmt->state = BATTERY_REGEN_DBR_ACTIVE;
+        }
+        else {
+            mgmt->state = BATTERY_REGEN_FRICTION_ONLY;
+        }
+    }
+
+    // 3. Execute strategy based on state
+    switch (mgmt->state) {
+        case BATTERY_REGEN_FULL:
+            // Apply full regen request
+            apply_regen_torque(T_regen_request);
+            break;
+
+        case BATTERY_REGEN_LIMITED:
+            // Limit regen based on battery acceptance
+            manage_full_battery_gradual(&T_regen_request, &mgmt->battery);
+            apply_regen_torque(T_regen_request);
+            break;
+
+        case BATTERY_REGEN_BLENDING:
+            // Blend regen and friction brakes
+            blend_regen_to_friction(&mgmt->blending, mgmt->battery.SOC);
+            break;
+
+        case BATTERY_REGEN_FRICTION_ONLY:
+            // Use only friction brakes
+            apply_friction_brakes(mgmt->blending.brake_force_total);
+            break;
+
+        case BATTERY_REGEN_DBR_ACTIVE:
+            // DBR handling excess voltage
+            update_dynamic_brake_resistor(&mgmt->dbr);
+            apply_friction_brakes(mgmt->blending.brake_force_total);
+            break;
+    }
+
+    // 4. Monitor DC bus voltage
+    float V_dc = read_dc_bus_voltage();
+    mgmt->dbr.V_dc = V_dc;
+    update_dynamic_brake_resistor(&mgmt->dbr);
+
+    // 5. Log telemetry
+    log_battery_regen_state(mgmt->state, mgmt->regen_power_limit);
+}
+```
+
+#### Cell Balancing Considerations
+
+When the battery is near full, cell balancing becomes important:
+
+```c
+typedef struct {
+    float cell_voltage_min;     // Minimum cell voltage (V)
+    float cell_voltage_max;     // Maximum cell voltage (V)
+    float cell_voltage_delta;   // Delta between min and max (V)
+    bool balancing_active;      // Cell balancing in progress
+} CellBalancing_t;
+
+void check_cell_balancing_impact(CellBalancing_t *cells, float *regen_limit) {
+    // Calculate voltage delta
+    cells->cell_voltage_delta = cells->cell_voltage_max - cells->cell_voltage_min;
+
+    // If cells are imbalanced, reduce regen to allow balancing
+    if (cells->cell_voltage_delta > 0.05f) {  // 50 mV threshold
+        cells->balancing_active = true;
+
+        // Reduce regen power to allow balancing time
+        *regen_limit *= 0.5f;
+
+        log_cell_balancing_active();
+    }
+    else {
+        cells->balancing_active = false;
+    }
+}
+```
+
+---
+
+### References for Section 2.4:
+
+**Books:**
+1. *"Battery Management Systems, Volume II: Equivalent-Circuit Methods"* by Gregory L. Plett - Chapter 6 (SOC-Dependent Charge Acceptance)
+2. *"Lithium-Ion Batteries: Advanced Materials and Technologies"* by Xianxia Yuan et al. - Chapter 9 (Charging Protocols)
+3. *"Battery Systems Engineering"* by Christopher D. Rahn and Chao-Yang Wang - Chapter 5 (Thermal Management During Charging)
+
+**Papers:**
+1. Chen, M., & Rincon-Mora, G. A. (2006). "Accurate Electrical Battery Model Capable of Predicting Runtime and I-V Performance." IEEE Transactions on Energy Conversion, 21(2), 504-511.
+2. Plett, G. L. (2004). "Extended Kalman Filtering for Battery Management Systems of LiPB-Based HEV Battery Packs: Part 3. State and Parameter Estimation." Journal of Power Sources, 134(2), 277-292.
+
+**Standards:**
+1. **SAE J1772**: "Electric Vehicle and Plug-in Hybrid Electric Vehicle Conductive Charge Coupler" (charge acceptance)
+2. **IEC 62660**: "Secondary Lithium-Ion Cells for the Propulsion of Electric Road Vehicles" (charge limits)
+
+**Application Notes:**
+1. **Texas Instruments**: "Implementing Pack-Level Charge Control" (SLVA952)
+2. **Analog Devices**: "Battery Management System Design" (AN-1333)
+
+---
+
+### 2.5 User-Selectable Regen Levels and Percentage Control
+
+Modern EVs offer drivers multiple regen levels, allowing them to choose between:
+- **Strong regen**: Maximum energy recovery, one-pedal driving
+- **Medium regen**: Balanced feel
+- **Light regen**: Coast feel similar to ICE vehicles
+- **Off**: No regen (for maximum coasting)
+
+This section explains how to implement user-selectable regen settings.
+
+#### Regen Level Mapping
+
+**User Interface to Control Mapping:**
+
+```c
+typedef enum {
+    REGEN_OFF = 0,           // No regenerative braking
+    REGEN_LOW = 1,           // Light regeneration (20% max)
+    REGEN_MEDIUM = 2,        // Medium regeneration (50% max)
+    REGEN_HIGH = 3,          // High regeneration (80% max)
+    REGEN_MAX = 4            // Maximum regeneration (100%)
+} RegenLevel_t;
+
+typedef struct {
+    RegenLevel_t level;      // User-selected regen level
+    float percentage;        // Regen power as percentage of max (0-1)
+    float T_max_available;   // Maximum available regen torque (Nm)
+    float T_regen_limited;   // Torque after applying percentage (Nm)
+} RegenLevelControl_t;
+
+void apply_regen_level(RegenLevelControl_t *ctrl) {
+    // Map regen level to percentage
+    switch (ctrl->level) {
+        case REGEN_OFF:
+            ctrl->percentage = 0.0f;
+            break;
+        case REGEN_LOW:
+            ctrl->percentage = 0.20f;  // 20%
+            break;
+        case REGEN_MEDIUM:
+            ctrl->percentage = 0.50f;  // 50%
+            break;
+        case REGEN_HIGH:
+            ctrl->percentage = 0.80f;  // 80%
+            break;
+        case REGEN_MAX:
+            ctrl->percentage = 1.0f;   // 100%
+            break;
+        default:
+            ctrl->percentage = 0.50f;  // Default to medium
+            break;
+    }
+
+    // Apply percentage to available torque
+    ctrl->T_regen_limited = ctrl->T_max_available * ctrl->percentage;
+}
+```
+
+#### Speed-Dependent Regen Tuning
+
+Different regen levels can be tuned differently at various speeds for better user experience:
+
+```c
+typedef struct {
+    float speed_low;         // Low speed threshold (rad/s)
+    float speed_high;        // High speed threshold (rad/s)
+    float scale_low_speed;   // Regen scaling at low speed
+    float scale_high_speed;  // Regen scaling at high speed
+} RegenSpeedTuning_t;
+
+float calculate_speed_dependent_regen(float omega_mech, RegenSpeedTuning_t *tuning) {
+    if (omega_mech < tuning->speed_low) {
+        // At low speed, use low-speed scaling
+        return tuning->scale_low_speed;
+    }
+    else if (omega_mech < tuning->speed_high) {
+        // Interpolate between low and high speed
+        float ratio = (omega_mech - tuning->speed_low) /
+                     (tuning->speed_high - tuning->speed_low);
+        return tuning->scale_low_speed +
+               ratio * (tuning->scale_high_speed - tuning->scale_low_speed);
+    }
+    else {
+        // At high speed, use high-speed scaling
+        return tuning->scale_high_speed;
+    }
+}
+```
+
+**Example Tuning:**
+
+```c
+// Regen level definitions with speed-dependent tuning
+const RegenSpeedTuning_t regen_tuning_profiles[5] = {
+    // REGEN_OFF
+    {
+        .speed_low = 10.0f,
+        .speed_high = 100.0f,
+        .scale_low_speed = 0.0f,
+        .scale_high_speed = 0.0f
+    },
+    // REGEN_LOW
+    {
+        .speed_low = 10.0f,
+        .speed_high = 100.0f,
+        .scale_low_speed = 0.10f,  // Very gentle at low speed
+        .scale_high_speed = 0.25f   // Slightly more at high speed
+    },
+    // REGEN_MEDIUM
+    {
+        .speed_low = 10.0f,
+        .speed_high = 100.0f,
+        .scale_low_speed = 0.30f,  // Moderate at low speed
+        .scale_high_speed = 0.60f   // More at high speed
+    },
+    // REGEN_HIGH
+    {
+        .speed_low = 10.0f,
+        .speed_high = 100.0f,
+        .scale_low_speed = 0.60f,  // Strong at low speed
+        .scale_high_speed = 0.90f   // Very strong at high speed
+    },
+    // REGEN_MAX
+    {
+        .speed_low = 10.0f,
+        .speed_high = 100.0f,
+        .scale_low_speed = 1.0f,   // Maximum at all speeds
+        .scale_high_speed = 1.0f
+    }
+};
+```
+
+#### Accelerator Pedal Mapping to Regen
+
+Map accelerator pedal position to regen torque command:
+
+```c
+typedef struct {
+    float pedal_position;       // Accelerator pedal (0-1, 0=released)
+    float pedal_regen_start;    // Pedal position where regen starts
+    float pedal_regen_max;      // Pedal position for max regen
+    float regen_curve_exp;      // Exponential curve factor (1=linear, >1=progressive)
+} PedalToRegenMap_t;
+
+float map_pedal_to_regen(PedalToRegenMap_t *map, float T_regen_max) {
+    // Check if pedal is in regen zone
+    if (map->pedal_position > map->pedal_regen_start) {
+        // Not in regen zone (pedal pressed)
+        return 0.0f;
+    }
+    else if (map->pedal_position < map->pedal_regen_max) {
+        // Maximum regen (pedal fully released or more)
+        return T_regen_max;
+    }
+    else {
+        // Proportional regen based on pedal position
+        float pedal_range = map->pedal_regen_start - map->pedal_regen_max;
+        float pedal_in_range = map->pedal_regen_start - map->pedal_position;
+        float ratio = pedal_in_range / pedal_range;
+
+        // Apply exponential curve for more natural feel
+        ratio = powf(ratio, map->regen_curve_exp);
+
+        return T_regen_max * ratio;
+    }
+}
+```
+
+**Example Configurations:**
+
+```c
+// Conservative mapping (gentle regen onset)
+PedalToRegenMap_t pedal_map_conservative = {
+    .pedal_regen_start = 0.15f,  // Regen starts at 15% pedal
+    .pedal_regen_max = 0.0f,     // Max regen at 0% pedal
+    .regen_curve_exp = 2.0f      // Quadratic curve (progressive)
+};
+
+// Aggressive mapping (one-pedal driving)
+PedalToRegenMap_t pedal_map_aggressive = {
+    .pedal_regen_start = 0.20f,  // Regen starts at 20% pedal
+    .pedal_regen_max = 0.0f,     // Max regen at 0% pedal
+    .regen_curve_exp = 1.5f      // Moderate curve
+};
+```
+
+#### Paddle/Button Control for Regen Adjustment
+
+Many EVs use steering wheel paddles or buttons to adjust regen on-the-fly:
+
+```c
+typedef struct {
+    RegenLevel_t level;          // Current regen level
+    RegenLevel_t level_min;      // Minimum level
+    RegenLevel_t level_max;      // Maximum level
+    bool paddle_plus_pressed;    // Increase regen paddle
+    bool paddle_minus_pressed;   // Decrease regen paddle
+} RegenPaddleControl_t;
+
+void update_regen_paddle_control(RegenPaddleControl_t *paddle) {
+    static bool paddle_plus_prev = false;
+    static bool paddle_minus_prev = false;
+
+    // Detect rising edge on increase paddle
+    if (paddle->paddle_plus_pressed && !paddle_plus_prev) {
+        if (paddle->level < paddle->level_max) {
+            paddle->level++;
+            log_regen_level_changed(paddle->level);
+            provide_haptic_feedback();
+        }
+    }
+
+    // Detect rising edge on decrease paddle
+    if (paddle->paddle_minus_pressed && !paddle_minus_prev) {
+        if (paddle->level > paddle->level_min) {
+            paddle->level--;
+            log_regen_level_changed(paddle->level);
+            provide_haptic_feedback();
+        }
+    }
+
+    // Store previous state
+    paddle_plus_prev = paddle->paddle_plus_pressed;
+    paddle_minus_prev = paddle->paddle_minus_pressed;
+}
+```
+
+#### Adaptive Regen (Advanced Feature)
+
+Some systems automatically adjust regen based on driving conditions:
+
+```c
+typedef struct {
+    float traffic_density;       // Traffic density estimate (0-1)
+    float road_grade;            // Road grade (radians, + = uphill)
+    float following_distance;    // Distance to vehicle ahead (m)
+    bool adaptive_enabled;       // Adaptive regen feature enabled
+    float adaptive_scale;        // Output: regen scaling factor (0-1)
+} AdaptiveRegen_t;
+
+void update_adaptive_regen(AdaptiveRegen_t *adapt, RegenLevel_t base_level) {
+    if (!adapt->adaptive_enabled) {
+        adapt->adaptive_scale = 1.0f;
+        return;
+    }
+
+    float scale = 1.0f;
+
+    // 1. Increase regen in heavy traffic (stop-and-go)
+    if (adapt->traffic_density > 0.7f) {
+        scale *= 1.2f;  // 20% more regen
+    }
+
+    // 2. Reduce regen on downhill (prevent too aggressive braking)
+    if (adapt->road_grade < -0.05f) {  // >5% downgrade
+        scale *= 0.8f;  // 20% less regen
+    }
+
+    // 3. Increase regen when following closely
+    if (adapt->following_distance < 20.0f && adapt->following_distance > 0.1f) {
+        float proximity = 1.0f - (adapt->following_distance / 20.0f);
+        scale *= (1.0f + 0.3f * proximity);  // Up to 30% more
+    }
+
+    // 4. Clamp scaling factor
+    adapt->adaptive_scale = fmaxf(0.5f, fminf(1.5f, scale));
+}
+```
+
+#### Complete Regen Level Management System
+
+Integrate all components:
+
+```c
+typedef struct {
+    // User inputs
+    RegenLevel_t user_level;         // User-selected base level
+    float pedal_position;            // Accelerator pedal (0-1)
+    float brake_pedal;               // Brake pedal (0-1)
+
+    // System state
+    float omega_mech;                // Motor speed (rad/s)
+    float T_regen_max_system;        // Max regen from battery/thermal limits
+
+    // Configuration
+    RegenLevelControl_t level_ctrl;
+    PedalToRegenMap_t pedal_map;
+    RegenSpeedTuning_t *speed_tuning;
+    AdaptiveRegen_t adaptive;
+
+    // Outputs
+    float T_regen_command;           // Final regen torque command (Nm)
+    float regen_power_actual;        // Actual regen power (W)
+} RegenLevelManager_t;
+
+void update_regen_level_manager(RegenLevelManager_t *mgr) {
+    // 1. Apply user-selected regen level
+    mgr->level_ctrl.level = mgr->user_level;
+    mgr->level_ctrl.T_max_available = mgr->T_regen_max_system;
+    apply_regen_level(&mgr->level_ctrl);
+
+    // 2. Apply speed-dependent tuning
+    float speed_scale = calculate_speed_dependent_regen(
+        mgr->omega_mech,
+        &mgr->speed_tuning[mgr->user_level]
+    );
+    mgr->level_ctrl.T_regen_limited *= speed_scale;
+
+    // 3. Apply adaptive adjustments
+    update_adaptive_regen(&mgr->adaptive, mgr->user_level);
+    mgr->level_ctrl.T_regen_limited *= mgr->adaptive.adaptive_scale;
+
+    // 4. Map pedal position to regen torque
+    mgr->pedal_map.pedal_position = mgr->pedal_position;
+    float T_regen_from_pedal = map_pedal_to_regen(
+        &mgr->pedal_map,
+        mgr->level_ctrl.T_regen_limited
+    );
+
+    // 5. Handle brake pedal override
+    if (mgr->brake_pedal > 0.05f) {
+        // Brake pedal pressed - use maximum regen + friction brakes
+        T_regen_from_pedal = mgr->level_ctrl.T_regen_limited;
+    }
+
+    // 6. Final regen command
+    mgr->T_regen_command = T_regen_from_pedal;
+
+    // 7. Calculate actual power for telemetry
+    mgr->regen_power_actual = mgr->T_regen_command * fabsf(mgr->omega_mech);
+}
+```
+
+#### User Experience Considerations
+
+**Smooth Transitions:**
+
+When the user changes regen level, smoothly transition to avoid jerk:
+
+```c
+#define REGEN_LEVEL_TRANSITION_TIME  0.5f  // seconds
+
+void smooth_regen_level_transition(float *T_current, float T_target, float dt) {
+    float transition_rate = fabsf(T_target) / REGEN_LEVEL_TRANSITION_TIME;
+    float max_change = transition_rate * dt;
+
+    float error = T_target - *T_current;
+
+    if (fabsf(error) < max_change) {
+        *T_current = T_target;
+    }
+    else if (error > 0.0f) {
+        *T_current += max_change;
+    }
+    else {
+        *T_current -= max_change;
+    }
+}
+```
+
+**User Feedback:**
+
+Provide clear feedback about regen status:
+
+```c
+void update_user_feedback(RegenLevelManager_t *mgr) {
+    // Display current regen level on dashboard
+    display_regen_level(mgr->user_level);
+
+    // Show real-time power flow
+    display_power_flow(mgr->regen_power_actual);
+
+    // If regen is limited, notify user
+    if (mgr->T_regen_command < mgr->level_ctrl.T_regen_limited * 0.8f) {
+        display_warning("Regen Limited: Battery Full");
+    }
+}
+```
+
+---
+
+### References for Section 2.5:
+
+**Books:**
+1. *"Automotive User Interfaces: Creating Interactive Experiences in the Car"* by Gerrit Meixner and Christoph Müller - Chapter 4 (Control Interfaces)
+2. *"Electric and Hybrid Vehicles: Design Fundamentals"* by Iqbal Husain - Chapter 10 (User Interface and Control)
+
+**Papers:**
+1. Pennycott, A., et al. (2015). "The Role of Regenerative Brake Blending in EV Range and Energy Consumption Patterns." EVS28 International Electric Vehicle Symposium and Exhibition.
+2. Lee, J., & Nelson, D. J. (2005). "Rotating Inertia Impact on Propulsion and Regenerative Braking for Electric Motor Driven Vehicles." IEEE Vehicle Power and Propulsion Conference.
+
+**Industry Standards:**
+1. **ISO 15622**: "Intelligent Transport Systems - Adaptive Cruise Control Systems" (discusses user-adjustable settings)
+2. **SAE J2954**: "Wireless Power Transfer for Light-Duty Plug-in/Electric Vehicles and Alignment Methodology" (user interface guidelines)
+
+**Application Notes:**
+1. **Bosch**: "Regenerative Braking Systems for Electric Vehicles" (2019 Technical Paper)
+2. **Tesla**: "Understanding Regenerative Braking" - Owner's Manual Section
+
+---
+
+**End of Section 2: Regenerative Braking Control**
+
+---
+
