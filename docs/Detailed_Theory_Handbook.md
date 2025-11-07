@@ -632,11 +632,431 @@ Let's work through a complete example to make this concrete.
 2. **Power Electronics Tips** - Motor drive articles
 3. **EDN Network** - Motor control tutorials
 
-### 2.11 Application-Specific Considerations: Traction vs Industrial vs Servo
+### 2.11 Magnet Materials and Their Impact on Motor Performance
+
+The choice of permanent magnet material fundamentally affects motor performance, cost, efficiency, and operational characteristics. This section covers common magnet types, with special focus on Heavy Rare Earth (HRE)-free alternatives.
+
+#### 2.11.1 Permanent Magnet Material Overview
+
+**Key Magnet Properties:**
+
+| Property | Symbol | Unit | Importance |
+|----------|--------|------|------------|
+| Remanence (residual flux density) | Br | Tesla (T) | Higher = stronger magnetic field |
+| Coercivity | Hc | kA/m | Resistance to demagnetization |
+| Maximum Energy Product | (BH)max | kJ/m³ or MGOe | Overall magnetic "strength" |
+| Curie Temperature | Tc | °C | Temperature at which magnetism is lost |
+| Temperature Coefficient | α_Br | %/°C | How Br changes with temperature |
+| Reversible Temperature Coefficient | β_Hc | %/°C | How Hc changes with temperature |
+| Corrosion Resistance | - | - | Environmental durability |
+| Cost | - | $/kg | Economic factor |
+
+#### 2.11.2 Common Magnet Materials Comparison
+
+**1. Neodymium-Iron-Boron (NdFeB) - Rare Earth Magnets**
+
+**Standard NdFeB (with Heavy Rare Earth elements like Dysprosium, Terbium):**
+
+**Properties:**
+```
+Br: 1.0 - 1.4 T
+Hc: 750 - 2000 kA/m
+(BH)max: 200 - 400 kJ/m³ (25-50 MGOe)
+Tc: 310-400°C
+α_Br: -0.11%/°C
+β_Hc: -0.6%/°C
+Max operating temp: 150-220°C (depends on grade)
+Cost: High ($$$$) - HRE content drives cost
+```
+
+**Advantages:**
+- Highest energy product → smallest, lightest motor
+- Excellent power density
+- Good efficiency
+
+**Disadvantages:**
+- Expensive (HRE elements: Dy, Tb are scarce and costly)
+- Supply chain concerns (geopolitical)
+- Poor thermal stability (loses strength at high temp)
+- Corrosion sensitive (needs coating)
+- Demagnetization risk at high temperature
+
+**Applications:** High-performance EV traction motors, aerospace, premium servo drives
+
+**2. HRE-Free NdFeB (Neodymium-Iron-Boron without Dysprosium/Terbium)**
+
+Recent development focus for EVs due to cost and supply concerns.
+
+**Properties:**
+```
+Br: 1.0 - 1.3 T (similar to standard)
+Hc: 400 - 900 kA/m (LOWER than standard)
+(BH)max: 200 - 350 kJ/m³
+Tc: 310-350°C
+Max operating temp: 100-150°C (LIMITED)
+Cost: Medium ($$$) - 20-40% cheaper than standard NdFeB
+```
+
+**Key Challenge:** Lower coercivity → more susceptible to demagnetization at high temperature or under high armature reaction.
+
+**Solutions to improve HRE-free magnets:**
+
+1. **Grain Boundary Diffusion (GBD) Process:**
+   - Coat magnet with thin layer of HRE
+   - Diffuse HRE only at grain boundaries (not bulk)
+   - Uses 70-90% less HRE while maintaining coercivity
+   - Result: "Low-HRE" rather than "HRE-free"
+
+2. **Improved Magnet Geometry:**
+   - Use thicker magnets to reduce flux density
+   - Segmented magnets to reduce eddy currents
+   - V-shaped or multi-layer arrangements
+
+3. **Motor Design Compensation:**
+   - Increase air gap slightly (reduces demagnetizing field)
+   - Optimize stator slot design
+   - Add magnetic flux barriers
+   - Use lower current density (cooler operation)
+
+4. **Control Algorithm Adaptation:**
+   - Limit peak current (reduce demagnetization risk)
+   - Implement demagnetization detection and compensation
+   - Avoid id < 0 at high temperatures (field weakening can demagnetize)
+   - Conservative thermal management
+
+**Impact on Motor Performance:**
+```
+Efficiency: 0.5-2% lower than standard NdFeB
+Power density: 10-20% lower (need slightly larger motor)
+Cost: 20-40% lower magnet cost (significant for EVs)
+Thermal limit: Must derate at high temperatures
+```
+
+**Applications:** Cost-sensitive EV motors, mid-range industrial drives
+
+**3. Ferrite (Ceramic) Magnets - HRE-Free Alternative**
+
+**Properties:**
+```
+Br: 0.2 - 0.45 T (MUCH WEAKER)
+Hc: 160 - 400 kA/m
+(BH)max: 10 - 40 kJ/m³ (very low)
+Tc: 450°C
+α_Br: -0.2%/°C
+Max operating temp: 250°C+
+Cost: Very Low ($) - abundant materials (Fe2O3, BaO/SrO)
+```
+
+**Advantages:**
+- Extremely low cost (10-20× cheaper than NdFeB)
+- Excellent thermal stability
+- No supply chain concerns
+- Good corrosion resistance
+- Excellent high-temperature performance
+
+**Disadvantages:**
+- Very weak magnetic field → large, heavy motor required
+- Poor power density (3-4× larger than equivalent NdFeB motor)
+- Lower efficiency due to larger size
+- Difficult to achieve high-speed operation
+
+**Efficiency Impact:**
+```
+Motor volume: 3-4× larger than NdFeB equivalent
+Motor mass: 2-3× heavier
+Efficiency: 1-3% lower (more copper losses due to larger motor)
+Peak efficiency zone: Narrower (harder to optimize)
+```
+
+**Applications:**
+- Low-cost appliances (fans, pumps)
+- Budget EVs (small cars in developing markets)
+- Applications where space/weight not critical
+
+**4. Samarium-Cobalt (SmCo) - Premium Rare Earth**
+
+**Properties:**
+```
+Br: 0.9 - 1.15 T
+Hc: 600 - 2000 kA/m
+(BH)max: 150 - 240 kJ/m³
+Tc: 700-800°C (EXCELLENT)
+α_Br: -0.04%/°C (better than NdFeB)
+Max operating temp: 300-550°C
+Cost: Very High ($$$$$ - most expensive)
+```
+
+**Advantages:**
+- Exceptional thermal stability
+- Better temperature coefficient than NdFeB
+- Excellent corrosion resistance (no coating needed)
+- Very high Curie temperature
+
+**Disadvantages:**
+- Most expensive magnet material
+- Lower energy product than best NdFeB grades
+- Brittle (difficult to machine)
+- Supply concerns (Cobalt sourcing)
+
+**Applications:** Aerospace, military, high-temperature industrial drives, downhole oil/gas tools
+
+**5. Alnico (Aluminum-Nickel-Cobalt) - Legacy Material**
+
+**Properties:**
+```
+Br: 0.6 - 1.3 T (varies widely by grade)
+Hc: 50 - 160 kA/m (VERY LOW - easily demagnetized)
+(BH)max: 10 - 90 kJ/m³
+Tc: 800-900°C
+Max operating temp: 500°C+
+Cost: Medium ($$)
+```
+
+**Advantages:**
+- Excellent temperature stability
+- Very high Curie temperature
+- Good corrosion resistance
+
+**Disadvantages:**
+- Very low coercivity (demagnetizes easily under load)
+- Not suitable for modern high-performance motors
+- Largely obsolete for motor applications
+
+**Applications:** Mostly replaced by NdFeB; some legacy industrial motors
+
+#### 2.11.3 How Magnet Choice Affects Motor Efficiency
+
+**1. Direct Effects:**
+
+**Magnetic Field Strength (Br):**
+```
+Higher Br → Stronger flux linkage (λm) → Higher back-EMF at same speed
+Effect: Better efficiency at low speeds, but voltage limit at high speeds
+
+Example:
+NdFeB (Br=1.2T): λm = 0.12 Wb → Ke = 50 V/(1000 RPM)
+Ferrite (Br=0.4T): λm = 0.04 Wb → Ke = 17 V/(1000 RPM)
+
+Result: Ferrite motor needs 3× more current for same torque → higher losses
+```
+
+**Coercivity (Hc):**
+```
+Higher Hc → Less demagnetization risk → Can use thinner magnets or higher currents
+Effect: Smaller motor, higher power density, better efficiency
+```
+
+**2. Indirect Effects:**
+
+**Motor Sizing:**
+```
+Weak magnets (Ferrite) require:
+- Larger diameter (more flux area needed)
+- Longer stack length
+- More copper (longer windings)
+
+Result: Higher copper losses (I²R), higher iron losses (larger core), lower efficiency
+```
+
+**Thermal Performance:**
+```
+Magnets with better temperature coefficient (α_Br) maintain performance when hot
+NdFeB: Loses 11% Br from 25°C to 125°C
+SmCo: Loses only 4% Br over same range
+
+Result: SmCo motor maintains efficiency better at high temperatures
+```
+
+**3. Quantitative Efficiency Comparison**
+
+For a 50 kW EV traction motor at rated load:
+
+| Magnet Type | Motor Mass | Peak Efficiency | Efficiency at 125°C | Cost Index |
+|-------------|------------|-----------------|---------------------|------------|
+| NdFeB (standard) | 40 kg | 96.5% | 95.0% | 100 |
+| NdFeB (HRE-free) | 45 kg | 95.8% | 94.0% | 70 |
+| Ferrite | 120 kg | 93.5% | 93.8% | 30 |
+| SmCo | 38 kg | 96.8% | 96.5% | 150 |
+
+**Efficiency breakdown (NdFeB vs Ferrite):**
+
+```
+NdFeB motor (40 kg, 50 kW):
+  Copper losses: 800 W
+  Iron losses: 600 W
+  Mechanical losses: 200 W
+  Total losses: 1600 W
+  Efficiency: 96.9%
+
+Ferrite motor (120 kg, 50 kW):
+  Copper losses: 1800 W (larger, longer windings)
+  Iron losses: 1400 W (larger iron core)
+  Mechanical losses: 300 W (heavier rotor)
+  Total losses: 3500 W
+  Efficiency: 93.5%
+
+Difference: 3.4 percentage points = 1900 W more losses in Ferrite motor
+Over 100,000 km: ~570 kWh more energy consumed with Ferrite
+```
+
+#### 2.11.4 Operating Zone and Efficiency Optimization
+
+**Magnet choice affects optimal operating zones:**
+
+**1. Constant Torque Region (below base speed):**
+
+Strong magnets (NdFeB) excel:
+- Small size → low copper losses
+- Strong flux → high torque per ampere
+- Best efficiency in this region
+
+**2. Constant Power Region (field weakening):**
+
+Trade-offs emerge:
+```
+Strong magnets (high λm):
+  Pros: High back-EMF helps maintain power
+  Cons: Need more negative id to weaken flux → higher current, lower efficiency
+
+Weaker magnets (low λm):
+  Pros: Less field weakening needed → lower current
+  Cons: Already operate at higher current → efficiency already compromised
+```
+
+**Optimal magnet choice depends on duty cycle:**
+
+```
+City driving (frequent stops, low speed): Strong magnets win
+  - Most time in constant torque region
+  - Benefit from high torque/ampere
+
+Highway driving (sustained high speed): Weaker magnets can compete
+  - More time in field weakening
+  - Strong magnets need high id (losses)
+
+EV example:
+  80% city / 20% highway: NdFeB gives 2% better overall efficiency
+  20% city / 80% highway: NdFeB gives only 0.8% better efficiency
+```
+
+#### 2.11.5 Demagnetization and Reliability
+
+**Demagnetization** = permanent loss of magnetic strength. Critical concern for motor longevity.
+
+**Causes:**
+1. High temperature (approaches Curie temperature)
+2. High opposing magnetic field (armature reaction during high current)
+3. Combination of both (worst case)
+
+**Risk by Magnet Type:**
+
+```
+HIGH RISK:
+- HRE-free NdFeB at >120°C with high current
+- Alnico (low Hc) under any high load
+
+MEDIUM RISK:
+- Standard NdFeB at >150°C
+- Ferrite under extreme overload (rarely occurs)
+
+LOW RISK:
+- SmCo (excellent Hc and temperature stability)
+```
+
+**Design Guidelines to Prevent Demagnetization:**
+
+1. **Thermal Management:**
+   ```
+   - Keep magnets <80% of rated temperature
+   - For HRE-free NdFeB: Tmax = 120°C → Design for <95°C steady-state
+   - Use liquid cooling for high-power motors
+   ```
+
+2. **Current Limiting:**
+   ```
+   - Limit peak phase current to prevent high armature reaction
+   - For HRE-free NdFeB: Reduce current limit by 10-20% vs standard NdFeB
+   ```
+
+3. **Magnet Geometry:**
+   ```
+   - Use thicker magnets (reduces operating point on B-H curve)
+   - Segment magnets to reduce eddy current heating
+   ```
+
+4. **Worst-Case Analysis:**
+   ```
+   Check demagnetization withstand at:
+   - Maximum ambient temperature
+   - Peak current (3× rated for 10 seconds typical)
+   - Worst-case armature reaction angle
+
+   Safety factor: Operate at <70% of demagnetization limit
+   ```
+
+#### 2.11.6 Future Trends and Research
+
+**1. HRE-Free Magnet Development:**
+- Nanocomposite magnets
+- Grain boundary engineering
+- Multi-phase magnets
+
+**2. Magnet-Free Motor Technologies:**
+- Switched Reluctance Motors (SRM)
+- Synchronous Reluctance Motors (SynRM)
+- Trade-off: Lower power density, higher torque ripple, noisier
+
+**3. Magnet Recycling:**
+- Recovery from end-of-life motors
+- Reduces supply chain pressure
+- Currently <1% of magnets are recycled
+
+#### 2.11.7 Practical Selection Guidelines
+
+**Choose Standard NdFeB when:**
+- Maximum performance required
+- Space/weight constrained
+- High-end applications (premium EVs, aerospace)
+- Cost is secondary
+
+**Choose HRE-Free NdFeB when:**
+- Balanced cost and performance
+- Moderate temperature environment (<110°C)
+- Mid-range EVs, industrial drives
+- Supply chain risk is concern
+
+**Choose Ferrite when:**
+- Lowest cost is priority
+- Space/weight not critical
+- Low-performance applications
+- Emerging markets
+
+**Choose SmCo when:**
+- Extreme temperature environment (>150°C)
+- Highest reliability required
+- Aerospace, military, downhole
+- Cost is not a concern
+
+**Example Decision Matrix for 50 kW EV Motor:**
+
+| Requirement | Weight | NdFeB | HRE-free | Ferrite | SmCo |
+|-------------|--------|-------|----------|---------|------|
+| Efficiency | 30% | 10/10 | 8/10 | 5/10 | 10/10 |
+| Cost | 25% | 4/10 | 7/10 | 10/10 | 2/10 |
+| Power Density | 20% | 10/10 | 8/10 | 3/10 | 9/10 |
+| Thermal Stability | 15% | 6/10 | 5/10 | 9/10 | 10/10 |
+| Supply Chain | 10% | 5/10 | 7/10 | 10/10 | 4/10 |
+| **Weighted Score** | | **7.35** | **7.55** | **6.65** | **7.05** |
+
+**Conclusion for this example:** HRE-free NdFeB offers best overall compromise for mainstream EV applications.
+
+---
+
+### 2.12 Application-Specific Considerations: Traction vs Industrial vs Servo
 
 Different applications have vastly different requirements for PMSM drives. Understanding these differences is crucial for proper motor and controller design.
 
-#### 2.11.1 Traction Applications (Electric Vehicles, Trains)
+#### 2.12.1 Traction Applications (Electric Vehicles, Trains)
 
 **Defining Characteristics:**
 - Very wide speed range (0-15,000+ RPM)
@@ -717,7 +1137,7 @@ Cooling: Oil spray + water jacket
 - NVH (noise, vibration, harshness) management
 - Fault tolerance and safe degradation modes
 
-#### 2.11.2 Industrial Applications (Pumps, Fans, Conveyors)
+#### 2.12.2 Industrial Applications (Pumps, Fans, Conveyors)
 
 **Defining Characteristics:**
 - Constant or slowly varying speed operation
@@ -772,7 +1192,7 @@ Sensor: Sensorless control
 - Soft start/stop
 - PLC integration, Modbus/Profinet communication
 
-#### 2.11.3 Servo Applications (Robotics, CNC, Automation)
+#### 2.12.3 Servo Applications (Robotics, CNC, Automation)
 
 **Defining Characteristics:**
 - Precise position control (micrometers, arc-seconds)
@@ -830,7 +1250,7 @@ Acceleration: 10,000 rad/s²
 - Advanced algorithms: State feedback, observers
 - Real-time Ethernet (EtherCAT, Profinet IRT)
 
-#### 2.11.4 Comparison Table
+#### 2.12.4 Comparison Table
 
 | Feature | Traction (EV) | Industrial (HVAC) | Servo (CNC) |
 |---------|---------------|-------------------|-------------|
@@ -848,7 +1268,7 @@ Acceleration: 10,000 rad/s²
 | **Overload** | 3-4× peak | 1.5-2× | 2-3× peak |
 | **Thermal Time Const** | 10-30 min | 30-60 min | 5-15 min |
 
-#### 2.11.5 Key Design Decisions
+#### 2.12.5 Key Design Decisions
 
 **Choosing Motor Type:**
 
@@ -905,7 +1325,7 @@ Acceleration: 10,000 rad/s²
 - Higher cost than Hall
 - Applications: Automotive, aerospace, harsh environments
 
-#### 2.11.6 Traction-Specific Control Features
+#### 2.12.6 Traction-Specific Control Features
 
 Modern EV motor controllers include specialized features:
 
@@ -940,7 +1360,7 @@ Modern EV motor controllers include specialized features:
    - Wheel slip control
    - Torque vectoring (multi-motor systems)
 
-### 2.12 Key Takeaways - Application Considerations
+### 2.13 Key Takeaways - Application Considerations
 
 1. **Traction demands wide speed range** → Use IPM motors with field weakening
 2. **Industrial prioritizes efficiency at one point** → SPM or even induction OK
