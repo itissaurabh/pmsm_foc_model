@@ -44,6 +44,14 @@
    - 6.3 Performance Monitoring
    - 6.4 Fault Reporting
 
+### 7. Sensored vs Sensorless Control
+   - 7.1 Introduction and Overview
+   - 7.2 Sensored Control Methods
+   - 7.3 Back-EMF Based Sensorless Control
+   - 7.4 High Frequency Injection Methods
+   - 7.5 Hybrid and Transition Strategies
+   - 7.6 Comparison and Selection Guide
+
 ---
 
 ## Introduction
@@ -6140,16 +6148,1742 @@ typedef struct __attribute__((packed)) {
 
 ---
 
+## Section 7: Sensored vs Sensorless Control
+
+One of the most fundamental design decisions in PMSM motor control is whether to use position sensors (Hall sensors, encoders, resolvers) or implement sensorless control algorithms that estimate rotor position from electrical measurements. This section provides a comprehensive comparison of both approaches, detailed sensorless methods, and guidance on selecting the right approach for your application.
+
+---
+
+### 7.1 Introduction and Overview
+
+#### The Position Sensing Challenge
+
+Field Oriented Control requires accurate knowledge of the rotor electrical position (θ_e) to perform the Park and inverse Park transformations. The position can be obtained through:
+
+1. **Sensored Control**: Direct measurement using physical sensors
+2. **Sensorless Control**: Estimation from motor electrical quantities (voltages, currents)
+
+**Fundamental Trade-off:**
+```
+Sensored Control:
+  ✓ Simple, robust, predictable performance
+  ✗ Higher cost, sensor wiring, reliability concerns
+
+Sensorless Control:
+  ✓ Lower cost, no sensor wiring, higher reliability (fewer parts)
+  ✗ Complex algorithms, startup challenges, parameter sensitivity
+```
+
+#### Why Sensorless Control?
+
+**Cost Reduction:**
+- Eliminates sensor cost ($5-$200 depending on type)
+- No sensor cables or connectors
+- Reduced wiring complexity
+- Simplified mechanical design
+
+**Reliability:**
+- Fewer components to fail
+- No sensor misalignment issues
+- No cable damage concerns
+- Better for harsh environments (vibration, temperature, moisture)
+
+**Compactness:**
+- Smaller motor packaging
+- Easier integration in space-constrained applications
+
+**When Sensorless Makes Sense:**
+- Consumer appliances (fans, pumps, compressors)
+- Cost-sensitive applications
+- High-volume production
+- Applications with limited low-speed requirements
+- Harsh environments where sensors are problematic
+
+**When Sensors Are Better:**
+- Safety-critical applications (automotive, aerospace)
+- Precision position control (robotics, CNC)
+- High torque at zero/low speed required
+- Redundancy requirements (ISO 26262, functional safety)
+- Applications where sensor cost is negligible compared to system cost
+
+#### Sensorless Control Categories
+
+Modern sensorless control methods fall into two main categories based on the speed range:
+
+**1. Back-EMF Based Methods (Medium to High Speed)**
+- Operate above ~10-15% of rated speed
+- Use motor back-EMF for position estimation
+- Lower computational burden
+- Cannot start motor from standstill
+
+**2. High Frequency Injection (HFI) Methods (Zero to Low Speed)**
+- Work from standstill to ~20-30% of rated speed
+- Exploit magnetic saliency
+- Higher computational cost
+- Can produce audible noise
+
+**3. Hybrid Methods (Full Speed Range)**
+- HFI at low speed, back-EMF at high speed
+- Smooth transition between methods
+- Best of both worlds
+
+---
+
+### References for Section 7.1:
+
+**Books:**
+1. *"Control of Electric Machine Drive Systems"* by Seung-Ki Sul - Chapter 10: Sensorless Control
+2. *"Sensorless Vector and Direct Torque Control"* by Peter Vas
+3. *"Advanced Electric Drives"* by Ned Mohan - Chapter 18: Sensorless Control
+
+**Papers:**
+1. Holtz, J. (2002). "Sensorless Control of Induction Motor Drives." *Proceedings of the IEEE*, 90(8), 1359-1394.
+2. Lorenz, R. D. (2006). "The Technology of Sensorless Control." *IEEE Industry Applications Magazine*
+
+**Application Notes:**
+1. **Texas Instruments**: "Sensorless Field Oriented Control of 3-Phase PMSMs" (SPRABQ7)
+2. **Microchip**: AN1078 - "Sensorless Field Oriented Control of PMSM Motors"
+3. **STMicroelectronics**: "Sensorless FOC for PMSM" (AN4680)
+
+---
+
+### 7.2 Sensored Control Methods
+
+Before diving into sensorless methods, let's briefly review sensored control to establish the baseline for comparison.
+
+#### 7.2.1 Hall Effect Sensors
+
+**Principles:**
+- 3 Hall sensors spaced 120° electrically
+- Provide 6 discrete position states per electrical cycle
+- Low resolution (60° electrical per state)
+
+**Advantages:**
+- Very low cost ($2-5)
+- Simple interface (3 digital signals)
+- Robust to EMI
+- Works from zero speed
+
+**Disadvantages:**
+- Low resolution → torque ripple
+- Requires interpolation for smooth control
+- Sensitive to mounting accuracy
+- Limited to ~120°C typically
+
+**Performance Characteristics:**
+```
+Position accuracy: ±30° electrical (without interpolation)
+Update rate: Varies with speed (6 updates per e-revolution)
+Cost: $2-5
+Interface: 3 x GPIO
+Latency: ~1 μs
+Temperature range: -40°C to 120°C (typical)
+```
+
+**Typical Implementation:**
+```c
+// Hall sensor reading (3 digital inputs)
+uint8_t read_hall_sensors(void) {
+    uint8_t hall = 0;
+    hall |= (HAL_GPIO_ReadPin(HALL_U_PORT, HALL_U_PIN) << 2);
+    hall |= (HAL_GPIO_ReadPin(HALL_V_PORT, HALL_V_PIN) << 1);
+    hall |= (HAL_GPIO_ReadPin(HALL_W_PORT, HALL_W_PIN) << 0);
+    return hall & 0x07;  // 0-7
+}
+
+// Hall state to electrical angle lookup
+const float hall_to_angle[8] = {
+    0.0f,      // Invalid state 0
+    210.0f,    // State 1: 210°
+    330.0f,    // State 2: 330°
+    270.0f,    // State 3: 270°
+    30.0f,     // State 4: 30°
+    0.0f,      // State 5: 0° (or 360°)
+    90.0f,     // State 6: 90°
+    0.0f       // Invalid state 7
+};
+
+float get_electrical_angle_from_hall(void) {
+    uint8_t hall_state = read_hall_sensors();
+    if (hall_state == 0 || hall_state == 7) {
+        // Invalid hall state - use last known angle
+        return last_angle;
+    }
+    return hall_to_angle[hall_state] * (PI / 180.0f);
+}
+```
+
+#### 7.2.2 Incremental Encoders
+
+**Principles:**
+- Optical or magnetic quadrature encoder
+- Provides A/B signals + optional index (Z)
+- High resolution (100-10,000 PPR typical)
+
+**Advantages:**
+- High position accuracy (<0.1° electrical)
+- Smooth torque with fine resolution
+- Excellent speed estimation
+- Works from zero speed
+
+**Disadvantages:**
+- Moderate cost ($10-100)
+- Requires quadrature decoding hardware
+- Relative position only (needs homing for absolute position)
+- Sensitive to vibration (optical types)
+
+**Performance Characteristics:**
+```
+Position accuracy: 360° / (4 × PPR) electrical
+Update rate: Continuous (quadrature)
+Cost: $10-100
+Interface: 2 x quadrature + 1 x index (optional)
+Latency: <1 μs
+Temperature range: -40°C to 85°C (typical)
+```
+
+**Typical Implementation:**
+```c
+// STM32 encoder interface using Timer in Encoder Mode
+void encoder_init(void) {
+    // Configure TIM2 in encoder mode
+    TIM2->SMCR = TIM_SMCR_SMS_0 | TIM_SMCR_SMS_1;  // Encoder mode 3
+    TIM2->ARR = 0xFFFF;
+    TIM2->CNT = 0;
+    TIM2->CR1 = TIM_CR1_CEN;
+}
+
+// Read position (handled by hardware)
+int32_t read_encoder_position(void) {
+    return (int32_t)TIM2->CNT;
+}
+
+// Convert to electrical angle
+float get_electrical_angle_from_encoder(int32_t pole_pairs) {
+    int32_t mech_counts = read_encoder_position();
+    float counts_per_e_rev = ENCODER_PPR * 4 / pole_pairs;  // PPR × 4 (quadrature)
+    float elec_angle = (mech_counts % (int32_t)counts_per_e_rev) / counts_per_e_rev * 2.0f * PI;
+    return elec_angle;
+}
+```
+
+#### 7.2.3 Resolvers
+
+**Principles:**
+- Rotary transformer providing sine/cosine analog outputs
+- Requires Resolver-to-Digital Converter (RDC) IC
+- Absolute position within one revolution
+
+**Advantages:**
+- Extremely robust (automotive-grade)
+- Wide temperature range (-55°C to 200°C)
+- Immune to vibration, dust, moisture
+- High accuracy (0.05° typical)
+- Inherent redundancy (sine + cosine)
+
+**Disadvantages:**
+- Highest cost ($50-200)
+- Complex excitation and decoding circuitry
+- Requires RDC chip ($5-20)
+- Larger size
+
+**Performance Characteristics:**
+```
+Position accuracy: ±0.05° electrical (12-bit RDC)
+Update rate: 1-10 kHz (RDC dependent)
+Cost: $50-200
+Interface: Sine/Cosine analog + excitation
+Latency: 100-500 μs (RDC conversion)
+Temperature range: -55°C to 200°C
+```
+
+**Typical Implementation:**
+```c
+// Using AD2S1210 Resolver-to-Digital Converter
+typedef struct {
+    SPI_HandleTypeDef *spi;
+    GPIO_TypeDef *sample_port;
+    uint16_t sample_pin;
+    float angle_offset;
+} Resolver_t;
+
+uint16_t read_resolver_angle(Resolver_t *res) {
+    uint8_t tx_data[2] = {0xFF, 0xFF};  // Dummy bytes
+    uint8_t rx_data[2];
+
+    // Assert SAMPLE line
+    HAL_GPIO_WritePin(res->sample_port, res->sample_pin, GPIO_PIN_RESET);
+    delay_us(1);
+    HAL_GPIO_WritePin(res->sample_port, res->sample_pin, GPIO_PIN_SET);
+
+    // Read 16-bit angle via SPI
+    HAL_SPI_TransmitReceive(res->spi, tx_data, rx_data, 2, 100);
+
+    uint16_t raw_angle = (rx_data[0] << 8) | rx_data[1];
+    return raw_angle;  // 0-65535 for 0-360°
+}
+
+float get_electrical_angle_from_resolver(Resolver_t *res, uint8_t pole_pairs) {
+    uint16_t raw = read_resolver_angle(res);
+    float mech_angle = (raw / 65536.0f) * 2.0f * PI;
+    float elec_angle = fmodf(mech_angle * pole_pairs + res->angle_offset, 2.0f * PI);
+    return elec_angle;
+}
+```
+
+#### 7.2.4 Sensored Control Summary
+
+**Decision Matrix for Sensors:**
+
+| Application | Recommended Sensor | Rationale |
+|-------------|-------------------|-----------|
+| Low-cost appliances | Hall sensors | Adequate performance, lowest cost |
+| Industrial servo | Encoder (optical) | High precision, smooth operation |
+| EV traction | Resolver | Harsh environment, safety, redundancy |
+| E-bikes, scooters | Hall or sensorless | Cost optimization |
+| Robotics | Encoder (high-res) | Position accuracy critical |
+| Aerospace | Resolver (redundant) | Reliability, temperature, vibration |
+| HVAC fans | Sensorless | Cost, no low-speed torque needed |
+
+---
+
+### References for Section 7.2:
+
+**Books:**
+1. *"Resolver and Encoder Conversion Handbook"* by Analog Devices
+2. *"Rotary Encoder Handbook"* by Dynapar
+
+**Application Notes:**
+1. **Analog Devices**: "A Resolver-to-Digital Converter for UAV Applications" (AN-1333)
+2. **Allegro**: "Hall-Effect IC Applications Guide"
+3. **TI**: "Position Sensors for Motor Control Applications" (SLYT527)
+
+**Standards:**
+1. **IEC 61326**: Electrical equipment for measurement, control - EMC requirements
+2. **MIL-PRF-39016**: Resolvers and Synchros (military specification)
+
+---
+
+### 7.3 Back-EMF Based Sensorless Control
+
+Back-EMF based sensorless methods are the most widely used approach for medium to high-speed operation. They estimate rotor position by observing the motor's back-electromotive force (back-EMF), which is directly proportional to rotor speed.
+
+#### 7.3.1 Fundamental Principle
+
+When a PMSM rotates, the permanent magnets induce voltages in the stator windings called back-EMF:
+
+```
+E_backemf = K_e × ω_m
+
+Where:
+  E_backemf = back-EMF voltage (V)
+  K_e = motor voltage constant (V/rad/s)
+  ω_m = mechanical speed (rad/s)
+```
+
+**Key Insight:** The back-EMF is perpendicular to the rotor flux (90° electrical ahead). By measuring the back-EMF, we can deduce the rotor position.
+
+**The Problem at Low Speed:**
+```
+At low speeds:
+  ω_m → 0
+  E_backemf → 0
+  Signal-to-noise ratio becomes very poor
+  Position estimation fails below ~10-15% of rated speed
+```
+
+#### 7.3.2 Sliding Mode Observer (SMO)
+
+The Sliding Mode Observer is one of the most popular back-EMF estimation methods due to its robustness and relatively simple implementation.
+
+**Theory:**
+
+The SMO uses a switching function to force estimated currents to track measured currents. The switching signal contains information about the back-EMF, which is extracted through filtering.
+
+**Mathematical Model:**
+
+```
+Motor voltage equations in αβ frame:
+
+v_α = R_s × i_α + L_s × (di_α/dt) + e_α
+v_β = R_s × i_β + L_s × (di_β/dt) + e_β
+
+Where e_α, e_β are the back-EMF components.
+
+Observer equations:
+
+di_α_est/dt = (v_α - R_s × i_α_est - e_α_est) / L_s
+di_β_est/dt = (v_β - R_s × i_β_est - e_β_est) / L_s
+
+Sliding mode function:
+
+e_α_est = K_smo × sign(i_α - i_α_est)
+e_β_est = K_smo × sign(i_β - i_β_est)
+
+Position extraction:
+
+θ_e = atan2(e_β_est, e_α_est)
+```
+
+**C Implementation:**
+
+```c
+// Sliding Mode Observer Structure
+typedef struct {
+    // Motor parameters
+    float R_s;              // Stator resistance (Ω)
+    float L_s;              // Stator inductance (H)
+    float K_e;              // Back-EMF constant (V/rad/s)
+
+    // Observer gains
+    float K_smo;            // SMO gain
+    float K_filter;         // Low-pass filter coefficient
+
+    // Estimated currents (αβ frame)
+    float i_alpha_est;
+    float i_beta_est;
+
+    // Estimated back-EMF (αβ frame)
+    float e_alpha_est;
+    float e_beta_est;
+
+    // Filtered back-EMF (for position extraction)
+    float e_alpha_filt;
+    float e_beta_filt;
+
+    // Estimated position and speed
+    float theta_est;
+    float omega_est;
+
+    // Sample time
+    float T_s;
+} SMO_t;
+
+void smo_init(SMO_t *smo, float R_s, float L_s, float K_e, float T_s) {
+    smo->R_s = R_s;
+    smo->L_s = L_s;
+    smo->K_e = K_e;
+    smo->T_s = T_s;
+
+    // Tuning parameters
+    smo->K_smo = 0.5f;      // Adjust based on motor and speed
+    smo->K_filter = 0.05f;  // Low-pass filter coefficient
+
+    // Initialize states
+    smo->i_alpha_est = 0.0f;
+    smo->i_beta_est = 0.0f;
+    smo->e_alpha_filt = 0.0f;
+    smo->e_beta_filt = 0.0f;
+    smo->theta_est = 0.0f;
+    smo->omega_est = 0.0f;
+}
+
+void smo_update(SMO_t *smo, float v_alpha, float v_beta, float i_alpha, float i_beta) {
+    // Current estimation error
+    float i_alpha_err = i_alpha - smo->i_alpha_est;
+    float i_beta_err = i_beta - smo->i_beta_est;
+
+    // Sliding mode switching function (sign function with hysteresis to reduce chattering)
+    float sign_alpha = (i_alpha_err > 0.01f) ? 1.0f : ((i_alpha_err < -0.01f) ? -1.0f : 0.0f);
+    float sign_beta = (i_beta_err > 0.01f) ? 1.0f : ((i_beta_err < -0.01f) ? -1.0f : 0.0f);
+
+    // Estimated back-EMF (raw)
+    smo->e_alpha_est = smo->K_smo * sign_alpha;
+    smo->e_beta_est = smo->K_smo * sign_beta;
+
+    // Low-pass filter for back-EMF (reduce chattering)
+    smo->e_alpha_filt += smo->K_filter * (smo->e_alpha_est - smo->e_alpha_filt);
+    smo->e_beta_filt += smo->K_filter * (smo->e_beta_est - smo->e_beta_filt);
+
+    // Current observer update (Euler integration)
+    float di_alpha = (v_alpha - smo->R_s * smo->i_alpha_est - smo->e_alpha_est) / smo->L_s;
+    float di_beta = (v_beta - smo->R_s * smo->i_beta_est - smo->e_beta_est) / smo->L_s;
+
+    smo->i_alpha_est += di_alpha * smo->T_s;
+    smo->i_beta_est += di_beta * smo->T_s;
+
+    // Position estimation from filtered back-EMF
+    smo->theta_est = atan2f(smo->e_beta_filt, smo->e_alpha_filt);
+
+    // Normalize to [0, 2π]
+    if (smo->theta_est < 0.0f) {
+        smo->theta_est += 2.0f * PI;
+    }
+
+    // Speed estimation (from back-EMF magnitude)
+    float e_mag = sqrtf(smo->e_alpha_filt * smo->e_alpha_filt +
+                        smo->e_beta_filt * smo->e_beta_filt);
+    smo->omega_est = e_mag / smo->K_e;
+}
+
+// Get estimated position
+float smo_get_position(SMO_t *smo) {
+    return smo->theta_est;
+}
+
+// Get estimated speed
+float smo_get_speed(SMO_t *smo) {
+    return smo->omega_est;
+}
+```
+
+**Advantages of SMO:**
+- Robust to parameter variations
+- Simple implementation
+- Works well at medium to high speeds
+- Good dynamic response
+
+**Disadvantages:**
+- Chattering in switching function (mitigated with filtering)
+- Filtering introduces phase delay
+- Fails at very low speeds (< 10% rated)
+- Sensitive to measurement noise at low speeds
+
+#### 7.3.3 Phase-Locked Loop (PLL) Based Observer
+
+PLL-based observers are another popular approach that uses a feedback loop to track the rotor position.
+
+**Principle:**
+
+A PLL locks onto the phase of the back-EMF vector, continuously adjusting the estimated position to minimize the error.
+
+**Block Diagram:**
+```
+         e_αβ (measured)
+              │
+              ↓
+    ┌─────────────────┐
+    │  Back-EMF       │
+    │  Calculation    │
+    └─────────────────┘
+              │
+              ↓
+    ┌─────────────────┐      θ_error
+    │  Phase Detector │───────────→  ┌──────┐
+    │  (cross product)│              │  PI  │
+    └─────────────────┘              │ Ctrl │
+              ↑                      └──────┘
+              │                          │
+              │                          ↓ ω_est
+              │                      ┌──────┐
+              │                      │ ∫ dt │
+              │                      └──────┘
+              │                          │
+              │                          ↓ θ_est
+              └──────────────────────────┘
+```
+
+**C Implementation:**
+
+```c
+// PLL-based Observer Structure
+typedef struct {
+    // Motor parameters
+    float K_e;              // Back-EMF constant
+    float pole_pairs;       // Number of pole pairs
+
+    // PLL gains
+    float Kp_pll;           // Proportional gain
+    float Ki_pll;           // Integral gain
+
+    // PLL states
+    float theta_est;        // Estimated position
+    float omega_est;        // Estimated speed
+    float integral;         // PI controller integral
+
+    // Sample time
+    float T_s;
+} PLL_Observer_t;
+
+void pll_init(PLL_Observer_t *pll, float K_e, float pole_pairs, float T_s) {
+    pll->K_e = K_e;
+    pll->pole_pairs = pole_pairs;
+    pll->T_s = T_s;
+
+    // Tuning (adjust based on motor dynamics)
+    pll->Kp_pll = 500.0f;   // Proportional gain
+    pll->Ki_pll = 10000.0f; // Integral gain
+
+    pll->theta_est = 0.0f;
+    pll->omega_est = 0.0f;
+    pll->integral = 0.0f;
+}
+
+void pll_update(PLL_Observer_t *pll, float v_alpha, float v_beta,
+                float i_alpha, float i_beta, float R_s, float L_s) {
+
+    // Estimate back-EMF from motor model
+    // e = v - R×i - L×(di/dt)
+    // Simplified: e ≈ v - R×i (assuming di/dt is small)
+    float e_alpha = v_alpha - R_s * i_alpha;
+    float e_beta = v_beta - R_s * i_beta;
+
+    // Transform estimated back-EMF to rotating frame using estimated position
+    float cos_theta = cosf(pll->theta_est);
+    float sin_theta = sinf(pll->theta_est);
+
+    float e_d = e_alpha * cos_theta + e_beta * sin_theta;
+    float e_q = -e_alpha * sin_theta + e_beta * cos_theta;
+
+    // Phase error (e_d should be zero when locked)
+    // Error signal: cross product of estimated and actual back-EMF
+    float phase_error = e_d;  // Simplification: error proportional to e_d
+
+    // PI controller
+    pll->integral += phase_error * pll->T_s;
+
+    // Anti-windup
+    if (pll->integral > 1000.0f) pll->integral = 1000.0f;
+    if (pll->integral < -1000.0f) pll->integral = -1000.0f;
+
+    // Estimated speed (mechanical)
+    pll->omega_est = pll->Kp_pll * phase_error + pll->Ki_pll * pll->integral;
+
+    // Integrate speed to get position
+    pll->theta_est += pll->omega_est * pll->T_s;
+
+    // Normalize angle
+    while (pll->theta_est > 2.0f * PI) pll->theta_est -= 2.0f * PI;
+    while (pll->theta_est < 0.0f) pll->theta_est += 2.0f * PI;
+}
+
+float pll_get_position(PLL_Observer_t *pll) {
+    return pll->theta_est;
+}
+
+float pll_get_speed(PLL_Observer_t *pll) {
+    return pll->omega_est;
+}
+```
+
+#### 7.3.4 Flux Linkage Observer
+
+This method integrates the stator voltage equations to estimate flux linkage, from which position is extracted.
+
+**Voltage Equations:**
+
+```
+ψ_α = ∫(v_α - R_s × i_α) dt
+ψ_β = ∫(v_β - R_s × i_β) dt
+
+θ_e = atan2(ψ_β, ψ_α)
+```
+
+**Challenges:**
+- **DC drift**: Pure integration accumulates DC offset errors
+- **Initial condition**: Unknown flux at startup
+
+**Solution:** Use compensated integrator or high-pass filter
+
+```c
+// Flux Linkage Observer with DC Drift Compensation
+typedef struct {
+    float R_s;
+    float psi_alpha;
+    float psi_beta;
+    float theta_est;
+    float omega_est;
+    float T_s;
+    float drift_comp;  // Drift compensation factor
+} FluxObserver_t;
+
+void flux_observer_update(FluxObserver_t *obs, float v_alpha, float v_beta,
+                          float i_alpha, float i_beta) {
+
+    // Back-EMF estimation
+    float e_alpha = v_alpha - obs->R_s * i_alpha;
+    float e_beta = v_beta - obs->R_s * i_beta;
+
+    // Integration with drift compensation
+    obs->psi_alpha += (e_alpha - obs->drift_comp * obs->psi_alpha) * obs->T_s;
+    obs->psi_beta += (e_beta - obs->drift_comp * obs->psi_beta) * obs->T_s;
+
+    // Position from flux
+    obs->theta_est = atan2f(obs->psi_beta, obs->psi_alpha);
+
+    // Speed from flux magnitude change
+    float psi_mag = sqrtf(obs->psi_alpha * obs->psi_alpha +
+                          obs->psi_beta * obs->psi_beta);
+    obs->omega_est = psi_mag / K_FLUX_LINKAGE;  // Motor-specific constant
+}
+```
+
+#### 7.3.5 Back-EMF Method Comparison
+
+| Method | Complexity | Robustness | Min Speed | Accuracy | CPU Load |
+|--------|-----------|------------|-----------|----------|----------|
+| **Sliding Mode Observer** | Medium | High | 10-15% | Good | Low-Medium |
+| **PLL Observer** | Medium | Medium | 10-15% | Very Good | Medium |
+| **Flux Linkage** | Low | Low (drift) | 15-20% | Medium | Low |
+| **Extended Kalman Filter** | High | Very High | 10-15% | Excellent | High |
+
+#### 7.3.6 Startup Strategy for Back-EMF Methods
+
+Since back-EMF methods don't work at zero speed, special startup strategies are needed:
+
+**Method 1: Open-Loop V/f Ramp**
+```c
+void startup_open_loop_ramp(void) {
+    float angle = 0.0f;
+    float omega = STARTUP_OMEGA_MIN;  // Start at minimum speed
+    float accel = STARTUP_ACCEL;      // rad/s²
+
+    while (omega < OMEGA_TRANSITION) {  // Until back-EMF is strong enough
+        // Open-loop position
+        angle += omega * T_s;
+        if (angle > 2.0f * PI) angle -= 2.0f * PI;
+
+        // Calculate voltage magnitude (V/f control)
+        float v_mag = V_F_RATIO * omega;
+
+        // Apply voltage
+        foc_set_voltage(v_mag, 0.0f, angle);  // id=0, vq based on V/f
+
+        // Ramp up speed
+        omega += accel * T_s;
+
+        delay_ms(T_s * 1000);
+    }
+
+    // Transition to sensorless observer
+    enable_sensorless_observer();
+}
+```
+
+**Method 2: I-f Startup with Alignment**
+```c
+void startup_with_alignment(void) {
+    // Step 1: Align rotor to known position
+    float align_current = 2.0f;  // Alignment current (A)
+    foc_set_current(align_current, 0.0f, 0.0f);  // id, iq, angle=0
+    delay_ms(500);  // Wait for alignment
+
+    // Step 2: Ramp speed in open loop
+    float angle = 0.0f;
+    float omega = 0.0f;
+    while (omega < OMEGA_TRANSITION) {
+        angle += omega * T_s;
+        foc_set_current(0.0f, TORQUE_CURRENT, angle);
+        omega += STARTUP_ACCEL * T_s;
+        delay_ms(T_s * 1000);
+    }
+
+    // Step 3: Hand over to sensorless
+    enable_sensorless_observer();
+}
+```
+
+---
+
+### References for Section 7.3:
+
+**Books:**
+1. *"Sensorless Vector and Direct Torque Control"* by Peter Vas - Chapter 3: Back-EMF Based Methods
+2. *"Control of Electric Machine Drive Systems"* by Seung-Ki Sul - Chapter 10.2: Observer-Based Sensorless Control
+
+**Papers:**
+1. Morimoto, S., et al. (2002). "Sensorless Control Strategy for Salient-Pole PMSM Based on Extended EMF in Rotating Reference Frame." *IEEE Trans. on Industry Applications*
+2. Chen, Z., et al. (2003). "A Sliding Mode Observer for Sensorless Control of PMSM." *IEEE Power Electronics Specialists Conference*
+3. Bolognani, S., et al. (1999). "Extended Kalman Filter Tuning in Sensorless PMSM Drives." *IEEE Trans. on Industry Applications*
+
+**Application Notes:**
+1. **Microchip**: AN1078 - "Sensorless FOC for PMSM" (includes SMO implementation)
+2. **STMicroelectronics**: AN4680 - "Sensorless FOC for PMSM using State Observer PLL"
+3. **Texas Instruments**: SPRABQ2 - "Sensorless FOC with Back-EMF Observer"
+4. **Infineon**: AP32370 - "Sensorless Field Oriented Control"
+
+**Websites:**
+1. **SimpleFOC**: Open-source library with back-EMF observer implementations
+2. **VESC Project**: Open-source motor controller with robust sensorless algorithms
+
+---
+
+### 7.4 High Frequency Injection (HFI) Methods
+
+High Frequency Injection is a powerful sensorless control technique that works from zero speed to low/medium speeds by exploiting the **magnetic saliency** of the motor. Unlike back-EMF methods, HFI doesn't require rotor motion, making it ideal for startup and low-speed operation.
+
+#### 7.4.1 Fundamental Principle: Magnetic Saliency
+
+**What is Magnetic Saliency?**
+
+Magnetic saliency means that the motor's inductance varies with rotor position. This is naturally present in:
+- **IPM motors** (Interior Permanent Magnet): Inherently salient due to magnet placement
+- **SPM motors** (Surface Permanent Magnet): Minimal saliency, but some exists due to stator slotting
+
+**Inductance Variation:**
+
+```
+For IPM motors:
+
+L_d ≠ L_q  (d-axis inductance ≠ q-axis inductance)
+
+Typically: L_q > L_d (by 20-50%)
+
+This creates position-dependent reluctance.
+```
+
+**HFI Core Idea:**
+
+1. Inject a high-frequency (HF) voltage signal (e.g., 500 Hz - 2 kHz)
+2. Due to saliency, the resulting HF current response varies with rotor position
+3. Extract position information from the HF current by signal processing
+4. Works even at zero speed!
+
+**Key Advantage:** Position information is embedded in the electromagnetic structure, not dependent on motion (back-EMF).
+
+**Key Disadvantage:**
+- Requires saliency (doesn't work well on non-salient SPM motors)
+- Audible noise from HF injection
+- Higher computational load
+- Acoustic emissions may be problematic in some applications
+
+#### 7.4.2 Rotating High Frequency Injection
+
+This is the classic HFI method where a rotating voltage vector is injected in the stationary (αβ) frame.
+
+**Theory:**
+
+Inject a rotating HF voltage:
+```
+v_αβ_hf = V_hf × cos(ω_hf × t + θ_hf_inj)
+
+Where:
+  V_hf = HF voltage amplitude (typ. 5-10% of rated voltage)
+  ω_hf = HF injection frequency (typ. 500-2000 Hz)
+  θ_hf_inj = injected HF angle
+```
+
+The resulting HF current contains the rotor position:
+```
+i_αβ_hf ≈ (I_hf_avg + I_hf_sal × cos(2(θ_hf_inj - θ_rotor)))
+
+Where:
+  θ_rotor = actual rotor position (what we want to estimate)
+  I_hf_sal = saliency-dependent current amplitude
+```
+
+The current modulation at **twice** the position error frequency allows extraction of rotor position.
+
+**C Implementation:**
+
+```c
+// Rotating HFI Structure
+typedef struct {
+    // HF injection parameters
+    float V_hf;             // HF voltage amplitude (V)
+    float omega_hf;         // HF frequency (rad/s), typically 500-2000 Hz
+    float theta_hf_inj;     // Injected HF angle
+
+    // Demodulation
+    float theta_est;        // Estimated rotor position
+    float omega_est;        // Estimated speed
+    float position_error;   // Position tracking error
+
+    // Tracking observer (PLL for position)
+    float Kp_track;         // Proportional gain
+    float Ki_track;         // Integral gain
+    float integral;         // Integrator state
+
+    // Sample time
+    float T_s;
+
+    // Band-pass filter states for HF current extraction
+    float i_alpha_hf;
+    float i_beta_hf;
+} RotatingHFI_t;
+
+void rotating_hfi_init(RotatingHFI_t *hfi, float T_s) {
+    hfi->V_hf = 2.0f;           // 2V HF injection
+    hfi->omega_hf = 2.0f * PI * 1000.0f;  // 1000 Hz
+    hfi->theta_hf_inj = 0.0f;
+    hfi->theta_est = 0.0f;
+    hfi->omega_est = 0.0f;
+    hfi->T_s = T_s;
+
+    // Tuning
+    hfi->Kp_track = 100.0f;
+    hfi->Ki_track = 2000.0f;
+    hfi->integral = 0.0f;
+}
+
+void rotating_hfi_inject(RotatingHFI_t *hfi, float *v_alpha_out, float *v_beta_out) {
+    // Generate rotating HF voltage vector
+    *v_alpha_out += hfi->V_hf * cosf(hfi->theta_hf_inj);
+    *v_beta_out += hfi->V_hf * sinf(hfi->theta_hf_inj);
+
+    // Update injection angle
+    hfi->theta_hf_inj += hfi->omega_hf * hfi->T_s;
+    if (hfi->theta_hf_inj > 2.0f * PI) hfi->theta_hf_inj -= 2.0f * PI;
+}
+
+void rotating_hfi_process(RotatingHFI_t *hfi, float i_alpha, float i_beta) {
+    // Step 1: Extract HF current component using band-pass filter
+    // (Simplified - in practice, use proper BPF or demodulation)
+    // Here we assume i_alpha, i_beta have been high-pass filtered
+
+    hfi->i_alpha_hf = i_alpha;  // Assume already filtered
+    hfi->i_beta_hf = i_beta;
+
+    // Step 2: Demodulate to extract position error
+    // Transform HF current to estimated rotor frame
+    float cos_est = cosf(hfi->theta_est);
+    float sin_est = sinf(hfi->theta_est);
+
+    float i_d_hf = hfi->i_alpha_hf * cos_est + hfi->i_beta_hf * sin_est;
+    float i_q_hf = -hfi->i_alpha_hf * sin_est + hfi->i_beta_hf * cos_est;
+
+    // Step 3: Extract position error from demodulated current
+    // Position error is proportional to i_q_hf (simplified)
+    hfi->position_error = i_q_hf;
+
+    // Step 4: Track position using PLL
+    hfi->integral += hfi->position_error * hfi->T_s;
+
+    // Anti-windup
+    if (hfi->integral > 10.0f) hfi->integral = 10.0f;
+    if (hfi->integral < -10.0f) hfi->integral = -10.0f;
+
+    // Estimated speed
+    hfi->omega_est = hfi->Kp_track * hfi->position_error + hfi->Ki_track * hfi->integral;
+
+    // Update position estimate
+    hfi->theta_est += hfi->omega_est * hfi->T_s;
+
+    // Normalize
+    while (hfi->theta_est > 2.0f * PI) hfi->theta_est -= 2.0f * PI;
+    while (hfi->theta_est < 0.0f) hfi->theta_est += 2.0f * PI;
+}
+
+float rotating_hfi_get_position(RotatingHFI_t *hfi) {
+    return hfi->theta_est;
+}
+```
+
+**Advantages:**
+- Works at zero speed
+- Good accuracy
+- Relatively simple demodulation
+
+**Disadvantages:**
+- Audible noise (1-2 kHz tone)
+- Interferes with fundamental current control
+- Not suitable for non-salient motors
+
+#### 7.4.3 Pulsating High Frequency Injection
+
+Instead of a rotating vector, inject a pulsating (alternating) voltage along a single axis.
+
+**Theory:**
+
+Inject pulsating voltage in estimated d-axis:
+```
+v_d_hf = V_hf × cos(ω_hf × t)
+v_q_hf = 0
+
+Where injection is in estimated dq frame.
+```
+
+Due to position error, a HF current appears in q-axis:
+```
+i_q_hf ∝ sin(2 × position_error) × cos(ω_hf × t)
+
+Extract position error from i_q_hf demodulation.
+```
+
+**C Implementation:**
+
+```c
+// Pulsating HFI Structure
+typedef struct {
+    float V_hf;             // HF voltage amplitude
+    float omega_hf;         // HF frequency (rad/s)
+    float hf_phase;         // Current HF phase
+
+    float theta_est;        // Estimated position
+    float omega_est;        // Estimated speed
+
+    // Demodulation
+    float i_q_hf_filt;      // Filtered q-axis HF current
+    float position_error;   // Position error signal
+
+    // Tracking PLL
+    float Kp_track;
+    float Ki_track;
+    float integral;
+
+    float T_s;
+} PulsatingHFI_t;
+
+void pulsating_hfi_init(PulsatingHFI_t *hfi, float T_s) {
+    hfi->V_hf = 2.0f;
+    hfi->omega_hf = 2.0f * PI * 1000.0f;  // 1 kHz
+    hfi->hf_phase = 0.0f;
+    hfi->theta_est = 0.0f;
+    hfi->omega_est = 0.0f;
+    hfi->T_s = T_s;
+
+    hfi->Kp_track = 100.0f;
+    hfi->Ki_track = 2000.0f;
+    hfi->integral = 0.0f;
+}
+
+void pulsating_hfi_inject(PulsatingHFI_t *hfi, float *v_d_out, float *v_q_out) {
+    // Inject pulsating voltage in d-axis only
+    float hf_carrier = cosf(hfi->hf_phase);
+    *v_d_out += hfi->V_hf * hf_carrier;
+    *v_q_out += 0.0f;  // No q-axis injection
+
+    // Update HF phase
+    hfi->hf_phase += hfi->omega_hf * hfi->T_s;
+    if (hfi->hf_phase > 2.0f * PI) hfi->hf_phase -= 2.0f * PI;
+}
+
+void pulsating_hfi_process(PulsatingHFI_t *hfi, float i_d, float i_q) {
+    // Step 1: Extract HF component from q-axis current
+    // (Requires band-pass filter centered at omega_hf - not shown)
+    float i_q_hf = i_q;  // Assume i_q contains only HF component after filtering
+
+    // Step 2: Demodulate using HF carrier
+    float hf_carrier = cosf(hfi->hf_phase);
+    float demod_signal = i_q_hf * hf_carrier;
+
+    // Step 3: Low-pass filter demodulated signal
+    float alpha_lpf = 0.1f;  // LPF coefficient
+    hfi->i_q_hf_filt += alpha_lpf * (demod_signal - hfi->i_q_hf_filt);
+
+    // Step 4: Position error is proportional to filtered signal
+    hfi->position_error = hfi->i_q_hf_filt;
+
+    // Step 5: Track position with PLL
+    hfi->integral += hfi->position_error * hfi->T_s;
+
+    // Anti-windup
+    if (hfi->integral > 10.0f) hfi->integral = 10.0f;
+    if (hfi->integral < -10.0f) hfi->integral = -10.0f;
+
+    hfi->omega_est = hfi->Kp_track * hfi->position_error + hfi->Ki_track * hfi->integral;
+    hfi->theta_est += hfi->omega_est * hfi->T_s;
+
+    // Normalize
+    while (hfi->theta_est > 2.0f * PI) hfi->theta_est -= 2.0f * PI;
+    while (hfi->theta_est < 0.0f) hfi->theta_est += 2.0f * PI;
+}
+```
+
+**Advantages over Rotating HFI:**
+- Less interference with fundamental control (injected in d-axis only)
+- Slightly lower acoustic noise
+- Easier to implement filtering
+
+**Disadvantages:**
+- Similar audible noise issues
+- Requires good saliency
+- Polarity detection needed (N-S ambiguity)
+
+#### 7.4.4 Square Wave Injection
+
+Instead of sinusoidal injection, use square wave voltage pulses.
+
+**Theory:**
+
+Inject short voltage pulses and measure current response:
+```
+Apply: v_d = +V_pulse for Δt
+Measure: Δi_d
+
+Apply: v_d = -V_pulse for Δt
+Measure: Δi_d
+
+Current response depends on inductance, which varies with position.
+```
+
+**Advantages:**
+- Can inject at PWM frequency (no additional HF needed)
+- Lower acoustic noise (random/spread spectrum)
+- Simpler implementation
+
+**Disadvantages:**
+- Requires fast ADC sampling
+- More sensitive to measurement noise
+- Requires careful timing with PWM
+
+**Simplified Concept:**
+```c
+// Square wave injection at PWM updates
+void square_wave_hfi_process(float i_d_sample1, float i_d_sample2, float *theta_est) {
+    // Sample current before and after voltage pulse
+    float delta_i_d = i_d_sample2 - i_d_sample1;
+
+    // Delta current is inversely proportional to inductance
+    // L_d varies with position for salient motors
+    // Extract position from inductance variation
+
+    // (Implementation requires advanced signal processing)
+    // This is a simplified representation
+}
+```
+
+#### 7.4.5 Saliency Requirements for HFI
+
+**HFI works best when:**
+
+```
+Saliency ratio ξ = L_q / L_d
+
+Excellent (IPM):  ξ = 1.5 - 3.0
+Good:             ξ = 1.2 - 1.5
+Marginal (SPM):   ξ = 1.05 - 1.2
+Poor (SPM):       ξ < 1.05
+```
+
+**For SPM motors with low saliency:**
+- Use higher HF voltage
+- More sophisticated signal processing
+- May not be reliable
+- Consider back-EMF methods only
+
+**For IPM motors:**
+- Natural saliency makes HFI very effective
+- Can work reliably down to zero speed
+- Excellent choice for traction applications
+
+#### 7.4.6 Acoustic Noise Mitigation
+
+HFI produces audible noise due to magnetostrictive forces at HF.
+
+**Mitigation Strategies:**
+
+1. **Frequency Selection:**
+   ```c
+   // Choose HF above human hearing (> 16 kHz)
+   // Trade-off: Higher frequency = harder to filter, more switching losses
+   float omega_hf_low_noise = 2.0f * PI * 18000.0f;  // 18 kHz
+   ```
+
+2. **Random Frequency Modulation:**
+   ```c
+   // Spread spectrum to reduce tonal noise
+   void hfi_random_freq_modulation(RotatingHFI_t *hfi) {
+       float freq_variation = ((rand() % 200) - 100) * 2.0f * PI;  // ±100 Hz
+       hfi->omega_hf = 2.0f * PI * 1000.0f + freq_variation;
+   }
+   ```
+
+3. **Amplitude Modulation:**
+   ```c
+   // Reduce HF amplitude at higher speeds (back-EMF becomes available)
+   void hfi_amplitude_scaling(RotatingHFI_t *hfi, float motor_speed) {
+       if (motor_speed < 100.0f) {
+           hfi->V_hf = 2.0f;  // Full HF voltage at low speed
+       } else if (motor_speed < 300.0f) {
+           // Ramp down linearly
+           hfi->V_hf = 2.0f * (1.0f - (motor_speed - 100.0f) / 200.0f);
+       } else {
+           hfi->V_hf = 0.0f;  // Disable HFI at higher speeds
+       }
+   }
+   ```
+
+#### 7.4.7 HFI Implementation Challenges
+
+**Challenge 1: Signal Processing**
+- Need band-pass filters for HF current extraction
+- Demodulation requires trigonometric calculations
+- Phase delay from filtering affects performance
+
+**Challenge 2: Computational Load**
+- HFI adds 20-40% CPU overhead
+- Need fast MCU with FPU (STM32F4, C2000)
+- Optimize using lookup tables for trig functions
+
+**Challenge 3: Parameter Sensitivity**
+- Requires accurate L_d, L_q values
+- Temperature variation affects inductance
+- Saturation changes saliency
+
+**Challenge 4: Polarity Detection**
+- HFI can't distinguish N from S pole (180° ambiguity)
+- Need initial polarity detection routine
+- Magnetic polarity test at startup
+
+**Polarity Detection Code:**
+```c
+// Initial polarity detection for HFI
+float detect_magnetic_polarity(void) {
+    // Apply positive d-axis current
+    foc_set_current(2.0f, 0.0f, 0.0f);  // id=2A, iq=0, angle=0
+    delay_ms(100);
+
+    // Apply negative d-axis current
+    foc_set_current(-2.0f, 0.0f, 0.0f);
+    delay_ms(100);
+
+    // Measure voltage or current response
+    // If response is symmetric: rotor aligned with d-axis
+    // If asymmetric: rotor is at d-axis + 180°
+
+    // (Detailed implementation requires careful measurement)
+
+    return 0.0f;  // or PI depending on detected polarity
+}
+```
+
+#### 7.4.8 When to Use HFI
+
+**✅ Use HFI When:**
+- IPM motor with good saliency (ξ > 1.3)
+- Zero/low speed torque required
+- Startup from standstill needed
+- Cost savings from eliminating sensors important
+- Application can tolerate slight acoustic noise
+
+**❌ Avoid HFI When:**
+- SPM motor with low saliency (ξ < 1.1)
+- Quiet operation is critical (e.g., HVAC, medical)
+- Simple control is preferred
+- MCU has limited computational power
+- High-speed operation only (use back-EMF instead)
+
+---
+
+### References for Section 7.4:
+
+**Books:**
+1. *"Sensorless Vector and Direct Torque Control"* by Peter Vas - Chapter 4: High Frequency Injection
+2. *"Control of Electric Machine Drive Systems"* by Seung-Ki Sul - Chapter 10.3: Signal Injection Methods
+
+**Papers (Foundational):**
+1. Holtz, J. (2006). "Initial Rotor Polarity Detection and Sensorless Control of PM Synchronous Machines." *IEEE Industrial Electronics Conference*
+2. Jansen, P. L., & Lorenz, R. D. (1995). "Transducerless Position and Velocity Estimation in Induction and Salient AC Machines." *IEEE Trans. on Industry Applications*, 31(2), 240-247.
+3. Corley, M. J., & Lorenz, R. D. (1998). "Rotor Position and Velocity Estimation for a Salient-Pole Permanent Magnet Synchronous Machine at Standstill and High Speeds." *IEEE Trans. on Industry Applications*, 34(4), 784-789.
+
+**Papers (Advanced/Recent):**
+1. Kim, S., et al. (2011). "Acoustic Noise Reduction of Pulsating Torque Using Switching Frequency Modulation in PMSM Sensorless Drives." *IEEE Trans. on Industrial Electronics*
+2. Wang, G., et al. (2014). "Position Sensorless Permanent Magnet Synchronous Machine Drives—A Review." *IEEE Trans. on Industrial Electronics*, 67(7), 5830-5842.
+
+**Application Notes:**
+1. **Texas Instruments**: "Sensorless Control with HFI for IPM Motors" (Application Report)
+2. **Infineon**: "High Frequency Injection for Sensorless PMSM Control" (AN2018-15)
+3. **STMicroelectronics**: "HFI-Based Sensorless Control" (Technical Note)
+
+**Implementation References:**
+1. **VESC Project** (GitHub): vedderb/bldc - Includes HFI implementation
+2. **ODrive** (GitHub): odriverobotics/ODrive - Sensorless control with HFI
+
+---
+
+### 7.5 Hybrid Sensorless Methods and Transition Strategies
+
+For full-speed-range sensorless control, combining HFI at low speeds with back-EMF observers at high speeds provides the best of both worlds. The key challenge is achieving smooth, stable transitions between the two methods.
+
+#### 7.5.1 Why Hybrid Methods?
+
+**Speed Range Coverage:**
+
+```
+Speed Range          | Recommended Method
+---------------------|--------------------
+0 - 10% rated speed  | HFI (back-EMF too weak)
+10% - 30% rated      | Transition zone (both methods)
+30% - 100% rated     | Back-EMF observer (HFI unnecessary, noisy)
+Above base speed     | Back-EMF observer only
+```
+
+**Benefits:**
+- HFI provides reliable startup from standstill
+- Back-EMF observer reduces acoustic noise at higher speeds
+- Lower computational load at cruising speeds
+- Better overall efficiency (no HF losses at high speed)
+
+#### 7.5.2 Transition Region Design
+
+**Transition Speed Selection:**
+
+```c
+// Transition thresholds
+#define SPEED_HFI_ONLY          50.0f   // Below this: HFI only (rad/s)
+#define SPEED_TRANSITION_START  100.0f  // Start blending
+#define SPEED_TRANSITION_END    200.0f  // Above this: Back-EMF only
+#define SPEED_HYSTERESIS        20.0f   // Hysteresis to prevent chattering
+```
+
+**Transition Strategies:**
+
+**1. Hard Switching (Simple but can cause disturbance):**
+```c
+typedef enum {
+    SENSORLESS_MODE_HFI,
+    SENSORLESS_MODE_BEMF,
+    SENSORLESS_MODE_TRANSITION
+} SensorlessMode_t;
+
+SensorlessMode_t select_sensorless_mode(float speed_abs) {
+    static SensorlessMode_t current_mode = SENSORLESS_MODE_HFI;
+
+    if (current_mode == SENSORLESS_MODE_HFI) {
+        if (speed_abs > SPEED_TRANSITION_END + SPEED_HYSTERESIS) {
+            current_mode = SENSORLESS_MODE_BEMF;
+        }
+    } else if (current_mode == SENSORLESS_MODE_BEMF) {
+        if (speed_abs < SPEED_TRANSITION_START - SPEED_HYSTERESIS) {
+            current_mode = SENSORLESS_MODE_HFI;
+        }
+    }
+
+    return current_mode;
+}
+```
+
+**2. Soft Blending (Smoother, recommended):**
+```c
+typedef struct {
+    // Observers
+    RotatingHFI_t hfi;
+    SMO_t smo;
+
+    // Blending
+    float blend_factor;     // 0 = HFI only, 1 = back-EMF only
+    float theta_blended;    // Blended position estimate
+    float omega_blended;    // Blended speed estimate
+
+    // Transition parameters
+    float speed_trans_start;
+    float speed_trans_end;
+} HybridObserver_t;
+
+void hybrid_observer_init(HybridObserver_t *hyb, float T_s) {
+    rotating_hfi_init(&hyb->hfi, T_s);
+    smo_init(&hyb->smo, R_S, L_S, K_E, T_s);
+
+    hyb->blend_factor = 0.0f;  // Start with HFI
+    hyb->speed_trans_start = 100.0f;  // rad/s
+    hyb->speed_trans_end = 200.0f;    // rad/s
+}
+
+void hybrid_observer_update(HybridObserver_t *hyb, float v_alpha, float v_beta,
+                            float i_alpha, float i_beta, float speed_abs) {
+
+    // Run both observers
+    rotating_hfi_process(&hyb->hfi, i_alpha, i_beta);
+    smo_update(&hyb->smo, v_alpha, v_beta, i_alpha, i_beta);
+
+    // Calculate blend factor based on speed
+    if (speed_abs < hyb->speed_trans_start) {
+        hyb->blend_factor = 0.0f;  // HFI only
+    } else if (speed_abs > hyb->speed_trans_end) {
+        hyb->blend_factor = 1.0f;  // Back-EMF only
+    } else {
+        // Linear blending in transition region
+        hyb->blend_factor = (speed_abs - hyb->speed_trans_start) /
+                           (hyb->speed_trans_end - hyb->speed_trans_start);
+    }
+
+    // Blend position estimates
+    float theta_hfi = rotating_hfi_get_position(&hyb->hfi);
+    float theta_smo = smo_get_position(&hyb->smo);
+
+    // Handle angle wrap-around for smooth blending
+    float theta_diff = theta_smo - theta_hfi;
+    if (theta_diff > PI) theta_diff -= 2.0f * PI;
+    if (theta_diff < -PI) theta_diff += 2.0f * PI;
+
+    hyb->theta_blended = theta_hfi + hyb->blend_factor * theta_diff;
+
+    // Normalize
+    while (hyb->theta_blended > 2.0f * PI) hyb->theta_blended -= 2.0f * PI;
+    while (hyb->theta_blended < 0.0f) hyb->theta_blended += 2.0f * PI;
+
+    // Blend speed estimates
+    float omega_hfi = rotating_hfi_get_speed(&hyb->hfi);
+    float omega_smo = smo_get_speed(&hyb->smo);
+    hyb->omega_blended = omega_hfi * (1.0f - hyb->blend_factor) +
+                        omega_smo * hyb->blend_factor;
+}
+
+float hybrid_observer_get_position(HybridObserver_t *hyb) {
+    return hyb->theta_blended;
+}
+
+float hybrid_observer_get_speed(HybridObserver_t *hyb) {
+    return hyb->omega_blended;
+}
+
+// Control HFI injection based on blend factor
+void hybrid_observer_injection_control(HybridObserver_t *hyb) {
+    // Gradually reduce HFI amplitude as back-EMF takes over
+    hyb->hfi.V_hf = V_HF_NOMINAL * (1.0f - hyb->blend_factor);
+}
+```
+
+#### 7.5.3 PLL-Based Position Tracking for Stability
+
+To ensure smooth handover, use a Phase-Locked Loop that can track either observer:
+
+```c
+typedef struct {
+    float theta_tracked;
+    float omega_tracked;
+    float Kp_pll;
+    float Ki_pll;
+    float integral;
+    float T_s;
+} TrackingPLL_t;
+
+void tracking_pll_init(TrackingPLL_t *pll, float T_s) {
+    pll->theta_tracked = 0.0f;
+    pll->omega_tracked = 0.0f;
+    pll->Kp_pll = 200.0f;
+    pll->Ki_pll = 5000.0f;
+    pll->integral = 0.0f;
+    pll->T_s = T_s;
+}
+
+void tracking_pll_update(TrackingPLL_t *pll, float theta_observed) {
+    // Calculate phase error
+    float phase_error = theta_observed - pll->theta_tracked;
+
+    // Wrap error to [-π, π]
+    while (phase_error > PI) phase_error -= 2.0f * PI;
+    while (phase_error < -PI) phase_error += 2.0f * PI;
+
+    // PI controller
+    pll->integral += phase_error * pll->T_s;
+
+    // Anti-windup
+    if (pll->integral > 100.0f) pll->integral = 100.0f;
+    if (pll->integral < -100.0f) pll->integral = -100.0f;
+
+    // Speed output
+    pll->omega_tracked = pll->Kp_pll * phase_error + pll->Ki_pll * pll->integral;
+
+    // Integrate to get position
+    pll->theta_tracked += pll->omega_tracked * pll->T_s;
+
+    // Normalize
+    while (pll->theta_tracked > 2.0f * PI) pll->theta_tracked -= 2.0f * PI;
+    while (pll->theta_tracked < 0.0f) pll->theta_tracked += 2.0f * PI;
+}
+```
+
+#### 7.5.4 Complete Hybrid Sensorless Startup Sequence
+
+```c
+typedef enum {
+    STARTUP_INIT,
+    STARTUP_POLARITY_DETECT,
+    STARTUP_HFI_STABILIZE,
+    STARTUP_OPEN_LOOP_RAMP,
+    STARTUP_HFI_ONLY,
+    STARTUP_TRANSITION,
+    RUNNING_BEMF_ONLY
+} StartupState_t;
+
+void hybrid_sensorless_startup_state_machine(void) {
+    static StartupState_t state = STARTUP_INIT;
+    static uint32_t timer = 0;
+
+    switch (state) {
+        case STARTUP_INIT:
+            // Initialize all observers
+            hybrid_observer_init(&hybrid_obs, T_S);
+            timer = 0;
+            state = STARTUP_POLARITY_DETECT;
+            break;
+
+        case STARTUP_POLARITY_DETECT:
+            // Detect magnetic polarity for HFI
+            float polarity = detect_magnetic_polarity();
+            hybrid_obs.hfi.theta_est = polarity;
+            timer = 0;
+            state = STARTUP_HFI_STABILIZE;
+            break;
+
+        case STARTUP_HFI_STABILIZE:
+            // Run HFI at standstill to stabilize estimate
+            hybrid_observer_update(&hybrid_obs, v_alpha, v_beta, i_alpha, i_beta, 0.0f);
+            timer++;
+
+            if (timer > 500) {  // 500 ms stabilization
+                state = STARTUP_OPEN_LOOP_RAMP;
+                timer = 0;
+            }
+            break;
+
+        case STARTUP_OPEN_LOOP_RAMP:
+            // Open-loop ramp with HFI position tracking
+            // ... (ramp motor speed gradually)
+
+            if (motor_speed > SPEED_HFI_RELIABLE) {
+                state = STARTUP_HFI_ONLY;
+            }
+            break;
+
+        case STARTUP_HFI_ONLY:
+            // Run with HFI only below transition speed
+            hybrid_observer_update(&hybrid_obs, v_alpha, v_beta, i_alpha, i_beta, motor_speed);
+
+            if (motor_speed > SPEED_TRANSITION_START) {
+                state = STARTUP_TRANSITION;
+            }
+            break;
+
+        case STARTUP_TRANSITION:
+            // Blending region - both observers running
+            hybrid_observer_update(&hybrid_obs, v_alpha, v_beta, i_alpha, i_beta, motor_speed);
+
+            if (motor_speed > SPEED_TRANSITION_END) {
+                state = RUNNING_BEMF_ONLY;
+            }
+            break;
+
+        case RUNNING_BEMF_ONLY:
+            // Back-EMF observer only
+            hybrid_observer_update(&hybrid_obs, v_alpha, v_beta, i_alpha, i_beta, motor_speed);
+
+            // Can transition back if speed drops
+            if (motor_speed < SPEED_TRANSITION_START - SPEED_HYSTERESIS) {
+                state = STARTUP_HFI_ONLY;
+            }
+            break;
+    }
+}
+```
+
+#### 7.5.5 Transition Challenges and Solutions
+
+**Challenge 1: Observer Disagreement**
+
+During transition, HFI and back-EMF may give slightly different position estimates.
+
+**Solution:** PLL tracking + slow blend rate
+```c
+// Use low-pass filtered blend factor for smoother transition
+float blend_alpha = 0.01f;  // Slow blend rate
+blend_factor_filt += blend_alpha * (blend_factor_target - blend_factor_filt);
+```
+
+**Challenge 2: Noise in Transition Region**
+
+Back-EMF is still weak, HFI is being reduced.
+
+**Solution:** Maximize overlap, keep both observers active
+```c
+// Run both observers in transition, even if one is dominant
+// This provides backup if one fails
+```
+
+**Challenge 3: Load Disturbances**
+
+Sudden load changes during transition can cause instability.
+
+**Solution:** Increase PLL bandwidth temporarily during transition
+```c
+if (in_transition_region) {
+    tracking_pll.Kp_pll *= 2.0f;  // More aggressive tracking
+    tracking_pll.Ki_pll *= 1.5f;
+}
+```
+
+---
+
+### References for Section 7.5:
+
+**Papers:**
+1. Kim, H., et al. (2011). "A New Hybrid Method for Rotor Position Estimation of IPMSM Using HFI and Back-EMF." *IEEE Energy Conversion Congress and Exposition*
+2. Yoon, Y., et al. (2013). "Hybrid Observer with Smooth Transition for Sensorless PMSM Drives." *IEEE Trans. on Industrial Electronics*, 60(7), 2789-2797.
+3. Liu, J., & Zhu, Z. Q. (2014). "Sensorless Control Strategy by Square-Wave Injection Into Stationary Reference Frame for PMSM." *IEEE Trans. on Industrial Electronics*, 61(9), 4672-4682.
+
+**Application Notes:**
+1. **Infineon**: "Hybrid Sensorless Control for PMSM" (Application Note)
+2. **Texas Instruments**: "Transitioning Between Sensorless Methods" (Application Report)
+
+---
+
+### 7.6 Comparison and Selection Guide
+
+This section provides a comprehensive decision framework for choosing between sensored and sensorless control, and selecting the appropriate sensorless method.
+
+#### 7.6.1 Complete Method Comparison Matrix
+
+| Criterion | Hall Sensors | Encoder | Resolver | Back-EMF | HFI | Hybrid |
+|-----------|--------------|---------|----------|----------|-----|--------|
+| **Cost** | $ | $$ | $$$$ | Free | Free | Free |
+| **Zero Speed** | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| **High Speed** | ✓ | ✓ | ✓ | ✓✓ | ✗ | ✓✓ |
+| **Accuracy** | Poor | Excellent | Excellent | Good | Good | Good |
+| **Reliability** | Good | Good (mag) | Excellent | Good | Good | Good |
+| **CPU Load** | Minimal | Minimal | Low | Medium | High | High |
+| **Acoustic Noise** | None | None | None | None | Present | Low-Med |
+| **SPM Motors** | ✓ | ✓ | ✓ | ✓ | Limited | Limited |
+| **IPM Motors** | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓✓ |
+| **Calibration** | Required | Optional | Required | Yes | Yes | Yes |
+| **Startup** | Instant | Instant | Instant | Ramp | Instant | Instant |
+
+#### 7.6.2 Application-Specific Recommendations
+
+**Electric Vehicle Traction Motors:**
+```
+✓ Primary: Resolver (safety-critical)
+✓ Backup/Alternative: Hybrid sensorless (HFI + back-EMF)
+✗ Not recommended: Hall only, encoder (vibration)
+
+Rationale:
+- Resolver: Extreme reliability, temperature, vibration resistance
+- Hybrid sensorless: Cost reduction, full speed range
+- IPM motors have natural saliency for HFI
+```
+
+**E-bikes / E-scooters:**
+```
+✓ Primary: Hall sensors
+✓ Alternative: Hybrid sensorless (cost-optimized)
+✗ Not recommended: Encoder, resolver (overkill)
+
+Rationale:
+- Hall: Good enough performance, low cost
+- Sensorless: Further cost reduction for high volume
+```
+
+**Industrial Servo / CNC:**
+```
+✓ Primary: High-resolution encoder (absolute or incremental + index)
+✓ Alternative: Resolver (harsh environment)
+✗ Not recommended: Sensorless (precision requirement)
+
+Rationale:
+- Encoder: Precision position control essential
+- Absolute feedback required for safety
+```
+
+**HVAC Fans / Pumps:**
+```
+✓ Primary: Sensorless back-EMF
+✗ Not recommended: Any sensor (cost), HFI (noise)
+
+Rationale:
+- No low-speed operation required
+- Cost-critical application
+- Startup ramp is acceptable
+```
+
+**Robotics / Drones:**
+```
+✓ Primary: High-res encoder (magnetic preferred)
+✓ Alternative: Hybrid sensorless (weight-constrained)
+✗ Not recommended: Resolver (too heavy)
+
+Rationale:
+- Precision control needed
+- Weight is critical
+- Magnetic encoder good vibration resistance
+```
+
+**Home Appliances (Washer, Dryer):**
+```
+✓ Primary: Hall sensors or sensorless back-EMF
+✗ Not recommended: High-res sensors (cost)
+
+Rationale:
+- Low-cost imperative
+- Adequate performance from simple sensors
+```
+
+#### 7.6.3 Decision Tree for Sensorless Method Selection
+
+```
+START: Want sensorless control
+    │
+    ├─ Motor Type?
+    │  ├─ SPM (low saliency)
+    │  │  └─ Use: Back-EMF observer only
+    │  │     └─ Startup: Open-loop ramp
+    │  │
+    │  └─ IPM (high saliency)
+    │     └─ Zero-speed torque needed?
+    │        ├─ Yes → Hybrid (HFI + back-EMF)
+    │        └─ No → Back-EMF only
+    │
+    ├─ Acoustic noise acceptable?
+    │  ├─ Yes → Can use HFI
+    │  └─ No → Back-EMF only, avoid HFI
+    │
+    ├─ MCU capability?
+    │  ├─ Low-end → Back-EMF only (lower CPU)
+    │  └─ High-end → Can use HFI or hybrid
+    │
+    └─ Speed range?
+       ├─ 0-100% → Hybrid method required
+       ├─ 10-100% → Back-EMF sufficient
+       └─ High speed only → Back-EMF only
+```
+
+#### 7.6.4 Implementation Complexity Ranking
+
+From simplest to most complex:
+
+1. **Hall sensors** - GPIO pins, lookup table
+2. **Back-EMF observer (basic SMO)** - Medium complexity, single observer
+3. **Encoder** - Hardware timer in quadrature mode
+4. **Back-EMF observer (PLL-based)** - Higher complexity, better performance
+5. **Pulsating HFI** - Signal processing, demodulation
+6. **Rotating HFI** - More complex demodulation
+7. **Hybrid sensorless** - Two observers + blending logic
+8. **Resolver** - RDC chip interface, calibration
+
+#### 7.6.5 Cost-Performance Trade-offs
+
+| Solution | Hardware Cost | Development Time | Performance | Best For |
+|----------|--------------|------------------|-------------|----------|
+| Hall | $ | 1 week | Adequate | Low-cost, moderate performance |
+| Back-EMF | $0 | 4-6 weeks | Good | High volume, cost-critical |
+| HFI | $0 | 8-12 weeks | Very Good | Zero-speed capable, IPM |
+| Hybrid | $0 | 12-16 weeks | Excellent | Premium sensorless |
+| Encoder | $$-$$$ | 2 weeks | Excellent | Precision control |
+| Resolver | $$$$-$$$$$ | 4 weeks | Outstanding | Safety-critical |
+
+#### 7.6.6 Final Recommendation Summary
+
+**For most applications:**
+- **Consumer products**: Back-EMF sensorless or Hall sensors
+- **Industrial**: Encoder (incremental or absolute)
+- **Automotive**: Resolver (safety) or hybrid sensorless (cost)
+- **High-performance**: Encoder + sensorless backup
+- **Cost-critical**: Back-EMF sensorless only
+
+**Key Takeaway:** The "best" solution depends entirely on application requirements, cost constraints, and performance needs. There is no one-size-fits-all answer.
+
+---
+
+### References for Section 7.6:
+
+**Standards:**
+1. **ISO 26262**: Functional Safety for Automotive (sensor redundancy requirements)
+2. **IEC 61800-5-1**: Safety requirements for adjustable speed drives
+
+**Papers:**
+1. Boldea, I., et al. (2007). "Automotive Electric Propulsion Systems With Reduced or No Permanent Magnets: An Overview." *IEEE Trans. on Industrial Electronics*, 61(10), 5696-5711.
+2. Wang, G., et al. (2020). "Sensorless PMSM Drives—A Survey Covering the Past Decade." *CES Trans. on Electrical Machines and Systems*, 4(4), 249-264.
+
+**Books:**
+1. *"Design of Brushless Permanent-Magnet Machines"* by J.R. Hendershot and T.J.E. Miller - Chapter 12: Sensorless Control
+
+---
+
+**End of Section 7: Sensored vs Sensorless Control**
+
+---
+
 ## Conclusion
 
 This document has covered advanced motor control strategies for electric vehicles, including:
 
 1. **Field Weakening Control**: Mathematics, implementation, and safety considerations
-2. **Regenerative Braking**: Physics, battery management, and user-selectable levels
+2. **Regenerative Braking**: Physics, battery management, hardware perspectives, and user-selectable levels
 3. **Braking Strategy and Blending**: Algorithmic approaches for coordinating regen and friction braking
 4. **Hill Hold Control**: Theory, implementation strategies, and system integration
 5. **Temperature-Based Derating**: Thermal management for motors and inverters
 6. **CAN Communication**: Essential parameters, debugging, and fault reporting
+7. **Sensored vs Sensorless Control**: Complete comparison, back-EMF methods, high frequency injection, and hybrid approaches
 
 Each section provides:
 - Theoretical foundation with mathematical derivations
