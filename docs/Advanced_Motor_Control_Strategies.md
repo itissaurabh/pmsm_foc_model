@@ -2725,3 +2725,964 @@ void update_user_feedback(RegenLevelManager_t *mgr) {
 
 ---
 
+## Section 3: Braking Strategy and Blending
+
+Modern electric vehicles must intelligently coordinate regenerative and friction braking to maximize energy recovery while ensuring safe, predictable, and comfortable braking performance. This section covers the algorithmic strategies for brake blending and the factors that determine when to use electrical vs mechanical braking.
+
+---
+
+### 3.1 Braking System Architecture and Requirements
+
+#### System Components
+
+A complete EV braking system consists of:
+
+1. **Regenerative Braking System**
+   - Motor/generator
+   - Inverter
+   - Battery pack
+   - Energy management controller
+
+2. **Friction Braking System**
+   - Hydraulic brake system
+   - Brake calipers and pads
+   - Brake master cylinder
+   - Electronic brake actuator (for blending)
+
+3. **Brake Blending Controller**
+   - Sensor inputs (pedal, speed, SOC, etc.)
+   - Blending algorithm
+   - Actuator outputs (motor torque, hydraulic pressure)
+
+4. **Safety Systems**
+   - Anti-lock Braking System (ABS)
+   - Electronic Stability Control (ESC)
+   - Brake-by-Wire redundancy
+
+#### Functional Requirements
+
+**1. Energy Recovery:**
+- Maximize regenerative braking usage to recover energy
+- Typical target: 70-80% of normal braking events using regen only
+- Maximize overall system efficiency
+
+**2. Deceleration Performance:**
+```c
+// Typical deceleration requirements
+#define DECEL_LIGHT_BRAKING    -2.0f  // m/s² (normal braking)
+#define DECEL_MODERATE_BRAKING -4.0f  // m/s² (firm braking)
+#define DECEL_EMERGENCY_BRAKING -9.0f // m/s² (emergency stop)
+#define DECEL_MAX_ACHIEVABLE   -10.0f // m/s² (with ABS)
+```
+
+**3. Brake Feel and Consistency:**
+- Consistent pedal feel regardless of regen availability
+- Linear relationship between pedal travel and deceleration
+- No sudden transitions or "grabbiness"
+- Target variation: < ±5% deceleration for same pedal position
+
+**4. Response Time:**
+```c
+// Response time requirements
+#define BRAKE_RESPONSE_TIME_MAX     150   // ms (from pedal to initial response)
+#define REGEN_TO_FRICTION_BLEND    100   // ms (transition time)
+#define EMERGENCY_BRAKE_RESPONSE    50    // ms (emergency mode)
+```
+
+**5. Safety and Redundancy:**
+- Friction brakes must always be available
+- System must fail-safe to friction brakes
+- ABS integration for wheel slip control
+- Independent braking on all four wheels
+
+#### Braking Power Budget
+
+Calculate total braking power available from each source:
+
+```c
+typedef struct {
+    float P_regen_max;          // Max regen power available (W)
+    float P_friction_max;       // Max friction brake power (W)
+    float vehicle_mass;         // Vehicle mass (kg)
+    float vehicle_speed;        // Current speed (m/s)
+    float decel_required;       // Required deceleration (m/s²)
+} BrakingPowerBudget_t;
+
+void calculate_braking_power_budget(BrakingPowerBudget_t *budget) {
+    // Total power to dissipate
+    float P_total_required = budget->vehicle_mass *
+                            fabsf(budget->decel_required) *
+                            budget->vehicle_speed;
+
+    // Check if regen alone is sufficient
+    if (P_total_required <= budget->P_regen_max) {
+        // Regen-only braking
+        budget->P_regen_max = P_total_required;
+        budget->P_friction_max = 0.0f;
+    }
+    else {
+        // Blended braking needed
+        // Use max regen, supplement with friction
+        float P_friction_needed = P_total_required - budget->P_regen_max;
+        budget->P_friction_max = P_friction_needed;
+    }
+}
+```
+
+#### Brake System States
+
+```c
+typedef enum {
+    BRAKE_IDLE,                 // No braking
+    BRAKE_REGEN_ONLY,           // Regen braking only
+    BRAKE_BLENDED,              // Regen + friction blending
+    BRAKE_FRICTION_ONLY,        // Friction brakes only
+    BRAKE_EMERGENCY,            // Emergency braking mode
+    BRAKE_ABS_ACTIVE,           // ABS engaged
+    BRAKE_FAULT                 // System fault, friction only
+} BrakeSystemState_t;
+
+typedef struct {
+    BrakeSystemState_t state;
+    BrakeSystemState_t prev_state;
+    float time_in_state;        // Time in current state (s)
+    bool transition_pending;    // State transition in progress
+} BrakeStateMachine_t;
+```
+
+---
+
+### References for Section 3.1:
+
+**Books:**
+1. *"Brake Design and Safety"* by Rudolf Limpert - Chapter 12 (Electric and Hybrid Vehicle Braking)
+2. *"Automotive Control Systems"* by Uwe Kiencke and Lars Nielsen - Chapter 9 (Brake Control)
+
+**Standards:**
+1. **FMVSS 135**: "Light Vehicle Brake Systems" (US Federal Motor Vehicle Safety Standards)
+2. **ECE R13**: "Uniform Provisions Concerning the Approval of Vehicles with Regard to Braking"
+3. **ISO 26262**: "Road Vehicles - Functional Safety" (brake system safety requirements)
+
+**Papers:**
+1. Ko, J., et al. (2015). "Development of Brake System and Regenerative Braking Cooperative Control Algorithm for Automatic-Transmission-Based Hybrid Electric Vehicles." IEEE Transactions on Vehicular Technology, 64(2), 431-440.
+
+---
+
+### 3.2 Algorithmic Strategies for Brake Blending
+
+This section presents different algorithmic approaches for coordinating regenerative and friction braking.
+
+#### Strategy 1: Sequential Blending (Simple)
+
+Use regen first, then add friction brakes when regen capacity is exceeded.
+
+```c
+typedef struct {
+    float decel_target;         // Target deceleration (m/s²)
+    float decel_regen_max;      // Max decel from regen (m/s²)
+    float decel_actual;         // Actual applied deceleration (m/s²)
+    float force_regen;          // Regen braking force (N)
+    float force_friction;       // Friction braking force (N)
+} SequentialBlending_t;
+
+void sequential_blending_strategy(SequentialBlending_t *blend, float vehicle_mass) {
+    // Convert target deceleration to force
+    float force_total = vehicle_mass * fabsf(blend->decel_target);
+
+    // 1. Apply regen up to its maximum
+    float force_regen_max = vehicle_mass * blend->decel_regen_max;
+
+    if (force_total <= force_regen_max) {
+        // Regen-only braking sufficient
+        blend->force_regen = force_total;
+        blend->force_friction = 0.0f;
+    }
+    else {
+        // Regen at max, add friction for remainder
+        blend->force_regen = force_regen_max;
+        blend->force_friction = force_total - force_regen_max;
+    }
+
+    // Calculate actual deceleration
+    blend->decel_actual = -(blend->force_regen + blend->force_friction) / vehicle_mass;
+}
+```
+
+**Advantages:**
+- Simple to implement
+- Maximizes energy recovery
+- Clear priority: regen first
+
+**Disadvantages:**
+- Transition point when friction engages can be felt by driver
+- Not optimal for brake feel
+- Step change in brake characteristics
+
+---
+
+#### Strategy 2: Proportional Blending
+
+Maintain a constant ratio between regen and friction throughout the braking range.
+
+```c
+typedef struct {
+    float regen_proportion;     // Proportion of braking from regen (0-1)
+    float decel_target;         // Target deceleration (m/s²)
+    float force_regen;          // Regen braking force (N)
+    float force_friction;       // Friction braking force (N)
+} ProportionalBlending_t;
+
+void proportional_blending_strategy(ProportionalBlending_t *blend,
+                                     float vehicle_mass,
+                                     float regen_capability) {
+    // Total braking force needed
+    float force_total = vehicle_mass * fabsf(blend->decel_target);
+
+    // Determine proportion based on regen capability
+    // regen_capability = 0.0 to 1.0 (e.g., based on SOC, temp, speed)
+    blend->regen_proportion = regen_capability;
+
+    // Apply proportion
+    blend->force_regen = force_total * blend->regen_proportion;
+    blend->force_friction = force_total * (1.0f - blend->regen_proportion);
+}
+```
+
+**Advantages:**
+- Smooth brake feel
+- No transition points
+- Consistent pedal feel as regen capability changes
+
+**Disadvantages:**
+- Less energy recovery than sequential
+- Friction brakes engaged even for light braking
+- More friction brake wear
+
+---
+
+#### Strategy 3: Adaptive Blending (Recommended)
+
+Intelligently blend based on multiple factors: deceleration level, speed, SOC, temperature, and driver preference.
+
+```c
+typedef struct {
+    // Inputs
+    float decel_target;         // Target deceleration (m/s²)
+    float decel_rate;           // Rate of change of deceleration (m/s³)
+    float vehicle_speed;        // Vehicle speed (m/s)
+    float SOC;                  // Battery SOC (0-1)
+    float T_motor;              // Motor temperature (°C)
+    float T_battery;            // Battery temperature (°C)
+    RegenLevel_t regen_level;   // User-selected regen level
+
+    // System capabilities
+    float decel_regen_max;      // Max decel from regen (m/s²)
+    float decel_friction_max;   // Max decel from friction (m/s²)
+
+    // Outputs
+    float force_regen;          // Regen braking force (N)
+    float force_friction;       // Friction braking force (N)
+    float blend_factor;         // Regen proportion (0-1)
+} AdaptiveBlending_t;
+
+void adaptive_blending_strategy(AdaptiveBlending_t *blend, float vehicle_mass) {
+    // Calculate total force needed
+    float force_total = vehicle_mass * fabsf(blend->decel_target);
+
+    // 1. Determine regen capability based on multiple factors
+    float regen_capability = 1.0f;
+
+    // Factor 1: SOC-based limiting
+    if (blend->SOC > 0.95f) {
+        regen_capability *= (0.98f - blend->SOC) / 0.03f;  // Linear taper
+    }
+
+    // Factor 2: Speed-based limiting (low speed)
+    if (blend->vehicle_speed < 5.0f) {  // Below 5 m/s (18 km/h)
+        regen_capability *= (blend->vehicle_speed / 5.0f);
+    }
+
+    // Factor 3: Temperature-based limiting
+    if (blend->T_motor > 120.0f) {
+        regen_capability *= fmaxf(0.5f, (150.0f - blend->T_motor) / 30.0f);
+    }
+
+    // Factor 4: User preference (regen level)
+    // Already captured in decel_regen_max
+
+    // 2. Categorize braking intensity
+    float decel_magnitude = fabsf(blend->decel_target);
+
+    if (decel_magnitude < 2.0f) {
+        // *** LIGHT BRAKING (< 2 m/s²) ***
+        // Use regen-only if possible
+        float force_regen_available = vehicle_mass * blend->decel_regen_max *
+                                      regen_capability;
+
+        if (force_total <= force_regen_available) {
+            // Regen-only
+            blend->force_regen = force_total;
+            blend->force_friction = 0.0f;
+            blend->blend_factor = 1.0f;
+        }
+        else {
+            // Light blending
+            blend->force_regen = force_regen_available;
+            blend->force_friction = force_total - force_regen_available;
+            blend->blend_factor = force_regen_available / force_total;
+        }
+    }
+    else if (decel_magnitude < 5.0f) {
+        // *** MODERATE BRAKING (2-5 m/s²) ***
+        // Blend to maintain consistent feel
+        float force_regen_available = vehicle_mass * blend->decel_regen_max *
+                                      regen_capability;
+
+        // Use 80% regen / 20% friction for smooth feel
+        float target_regen_proportion = 0.80f;
+
+        blend->force_regen = fminf(force_total * target_regen_proportion,
+                                  force_regen_available);
+        blend->force_friction = force_total - blend->force_regen;
+        blend->blend_factor = blend->force_regen / force_total;
+    }
+    else {
+        // *** HARD BRAKING (> 5 m/s²) or EMERGENCY ***
+        // Prioritize deceleration, use all available braking
+        float force_regen_available = vehicle_mass * blend->decel_regen_max *
+                                      regen_capability;
+
+        blend->force_regen = force_regen_available;
+        blend->force_friction = force_total - force_regen_available;
+
+        // Ensure we don't exceed friction brake capacity
+        float force_friction_max = vehicle_mass * blend->decel_friction_max;
+        if (blend->force_friction > force_friction_max) {
+            blend->force_friction = force_friction_max;
+        }
+
+        blend->blend_factor = blend->force_regen / (blend->force_regen + blend->force_friction);
+
+        // Detect emergency braking (very high decel rate)
+        if (fabsf(blend->decel_rate) > 10.0f) {  // m/s³
+            // Emergency: immediately apply maximum friction
+            blend->force_friction = force_friction_max;
+        }
+    }
+}
+```
+
+---
+
+#### Strategy 4: Predictive Blending
+
+Use vehicle sensors and driver behavior to predict braking needs and preemptively adjust blending strategy.
+
+```c
+typedef struct {
+    float distance_to_obstacle;     // Distance to vehicle/obstacle ahead (m)
+    float relative_velocity;        // Closing velocity (m/s)
+    float brake_pedal_velocity;     // Rate of pedal application (1/s)
+    float time_to_collision;        // Calculated TTC (s)
+    bool prediction_active;         // Predictive mode active
+    float predicted_decel;          // Predicted deceleration need (m/s²)
+} PredictiveBlending_t;
+
+void predictive_blending_strategy(PredictiveBlending_t *pred) {
+    // 1. Calculate time to collision
+    if (pred->distance_to_obstacle > 0.1f && pred->relative_velocity > 0.1f) {
+        pred->time_to_collision = pred->distance_to_obstacle / pred->relative_velocity;
+    }
+    else {
+        pred->time_to_collision = 999.0f;  // No imminent collision
+    }
+
+    // 2. Analyze brake pedal application rate
+    // Fast pedal application → likely emergency
+    bool emergency_intent = (pred->brake_pedal_velocity > 5.0f);  // Fast application
+
+    // 3. Predict required deceleration
+    if (pred->time_to_collision < 3.0f || emergency_intent) {
+        // Predict aggressive braking needed
+        pred->prediction_active = true;
+
+        // Estimate required deceleration to stop in time
+        // Using kinematic equation: v² = v₀² + 2*a*d
+        float current_speed = get_vehicle_speed();
+        float stopping_distance = pred->distance_to_obstacle - 2.0f;  // 2m safety margin
+
+        if (stopping_distance > 0.1f) {
+            pred->predicted_decel = (current_speed * current_speed) /
+                                   (2.0f * stopping_distance);
+        }
+        else {
+            pred->predicted_decel = 10.0f;  // Maximum
+        }
+
+        // Preemptively allocate more to friction brakes
+        // This reduces regen proportion to ensure immediate response
+    }
+    else {
+        pred->prediction_active = false;
+        pred->predicted_decel = 0.0f;
+    }
+}
+```
+
+---
+
+#### Strategy 5: Wheel-Individual Blending (Advanced)
+
+For vehicles with individual wheel control, blend regen and friction per wheel for optimal performance and stability.
+
+```c
+typedef struct {
+    float wheel_speed[4];           // Wheel speeds (rad/s): FL, FR, RL, RR
+    float wheel_slip[4];            // Wheel slip ratios (0-1)
+    float force_regen[4];           // Regen force per wheel (N)
+    float force_friction[4];        // Friction force per wheel (N)
+    float axle_torque_limit_front;  // Front axle torque limit (Nm)
+    float axle_torque_limit_rear;   // Rear axle torque limit (Nm)
+    bool abs_active[4];             // ABS active per wheel
+} WheelIndividualBlending_t;
+
+void wheel_individual_blending(WheelIndividualBlending_t *wib,
+                                float total_force_required,
+                                float vehicle_mass) {
+    // 1. Calculate target force distribution
+    // Typical: 60% front, 40% rear for FWD vehicle
+    float force_front = total_force_required * 0.60f;
+    float force_rear = total_force_required * 0.40f;
+
+    // 2. Allocate regen to driven axle (rear in RWD example)
+    float max_regen_force = (wib->axle_torque_limit_rear / WHEEL_RADIUS);
+
+    // 3. Distribute regen on rear axle
+    if (force_rear <= max_regen_force) {
+        // Rear axle can handle all rear braking with regen
+        wib->force_regen[2] = force_rear / 2.0f;  // Rear left
+        wib->force_regen[3] = force_rear / 2.0f;  // Rear right
+        wib->force_friction[2] = 0.0f;
+        wib->force_friction[3] = 0.0f;
+    }
+    else {
+        // Regen at max, add friction
+        wib->force_regen[2] = max_regen_force / 2.0f;
+        wib->force_regen[3] = max_regen_force / 2.0f;
+        float friction_rear = force_rear - max_regen_force;
+        wib->force_friction[2] = friction_rear / 2.0f;
+        wib->force_friction[3] = friction_rear / 2.0f;
+    }
+
+    // 4. Front axle uses friction only (no regen)
+    wib->force_regen[0] = 0.0f;  // Front left
+    wib->force_regen[1] = 0.0f;  // Front right
+    wib->force_friction[0] = force_front / 2.0f;
+    wib->force_friction[1] = force_front / 2.0f;
+
+    // 5. Check for wheel slip and adjust with ABS
+    for (int i = 0; i < 4; i++) {
+        if (wib->wheel_slip[i] > 0.15f) {  // >15% slip
+            // ABS intervention - reduce braking on this wheel
+            wib->abs_active[i] = true;
+
+            // Reduce regen immediately
+            wib->force_regen[i] *= 0.5f;
+
+            // Modulate friction (ABS)
+            wib->force_friction[i] *= (1.0f - wib->wheel_slip[i]);
+        }
+        else {
+            wib->abs_active[i] = false;
+        }
+    }
+}
+```
+
+---
+
+### References for Section 3.2:
+
+**Books:**
+1. *"Vehicle Dynamics and Control"* by Rajesh Rajamani - Chapter 5 (Brake Control Systems)
+2. *"Electric and Hybrid Vehicles: Technologies, Modeling and Control"* by Amir Khajepour et al. - Chapter 7 (Brake Blending Strategies)
+
+**Papers:**
+1. Kim, J., & Park, Y. (2018). "Novel Regenerative Braking Cooperative Control Method for Front-Wheel-Drive Hybrid Electric Vehicles Based on Adaptive Regenerative Brake Torque Optimization." IEEE Access, 6, 63033-63049.
+2. Zhang, J., et al. (2020). "Regenerative Braking Control Strategy for Electric Vehicles Based on Optimization of Switched Reluctance Generator Drive." IEEE/ASME Transactions on Mechatronics, 25(1), 279-288.
+
+**Application Notes:**
+1. **Bosch**: "Electro-Hydraulic Brake Systems for Hybrid and Electric Vehicles" (Technical White Paper)
+2. **Continental**: "Integrated Brake Control for Electric Vehicles" (2021)
+
+---
+
+### 3.3 Brake Feel and User Experience
+
+Creating natural, confidence-inspiring brake feel is critical for user acceptance. This section covers the factors that influence brake feel and how to optimize the user experience.
+
+#### Brake Pedal Feel Requirements
+
+**Key Characteristics:**
+
+1. **Linearity**: Proportional relationship between pedal travel/force and deceleration
+2. **Progressiveness**: Gradual increase in braking force
+3. **Consistency**: Same pedal position → same deceleration
+4. **Feedback**: Driver can feel what the brakes are doing
+
+**Pedal Travel and Force Curves:**
+
+```c
+typedef struct {
+    float pedal_position;       // Pedal position (0-1)
+    float pedal_force;          // Applied force (N)
+    float decel_target;         // Target deceleration (m/s²)
+    float pedal_feel_curve_exp; // Exponential curve factor
+} BrakePedalFeel_t;
+
+float map_pedal_to_deceleration(BrakePedalFeel_t *pedal) {
+    // Option 1: Linear mapping
+    // decel = pedal_position * MAX_DECEL
+
+    // Option 2: Progressive mapping (preferred)
+    // Provides fine control at light braking, more aggressive at high pedal
+    float normalized = pedal->pedal_position;
+
+    // Apply curve (exponential for progressiveness)
+    float curve_factor = pedal->pedal_feel_curve_exp;  // Typically 1.5-2.0
+    normalized = powf(normalized, curve_factor);
+
+    // Map to deceleration range
+    float decel_range = DECEL_MAX_ACHIEVABLE - DECEL_LIGHT_BRAKING;
+    pedal->decel_target = -(DECEL_LIGHT_BRAKING + normalized * decel_range);
+
+    return pedal->decel_target;
+}
+```
+
+**Pedal Feel Compensation:**
+
+When regen availability changes (e.g., battery full), the system must compensate to maintain consistent pedal feel:
+
+```c
+typedef struct {
+    float decel_target;             // Target deceleration (m/s²)
+    float decel_actual;             // Actual measured deceleration (m/s²)
+    float decel_error;              // Error between target and actual
+    float friction_compensation;    // Additional friction force needed (N)
+} PedalFeelCompensation_t;
+
+void compensate_pedal_feel(PedalFeelCompensation_t *comp, float dt) {
+    // Calculate deceleration error
+    comp->decel_error = comp->decel_target - comp->decel_actual;
+
+    // PI controller for compensation
+    static float integral = 0.0f;
+    float Kp = 500.0f;  // Proportional gain (N/(m/s²))
+    float Ki = 100.0f;  // Integral gain (N/(m/s²*s))
+
+    integral += comp->decel_error * dt;
+    integral = fmaxf(-1000.0f, fminf(1000.0f, integral));  // Anti-windup
+
+    // Calculate additional friction force needed
+    comp->friction_compensation = Kp * comp->decel_error + Ki * integral;
+
+    // Clamp to reasonable limits
+    comp->friction_compensation = fmaxf(0.0f, fminf(5000.0f, comp->friction_compensation));
+}
+```
+
+#### Blending Transparency
+
+The driver should not notice transitions between regen and friction braking.
+
+**Smooth Transition Algorithm:**
+
+```c
+#define BLEND_TRANSITION_TIME  0.3f  // seconds
+
+typedef struct {
+    float force_regen_current;      // Current regen force (N)
+    float force_regen_target;       // Target regen force (N)
+    float force_friction_current;   // Current friction force (N)
+    float force_friction_target;    // Target friction force (N)
+    float transition_rate;          // Max rate of change (N/s)
+} BlendTransition_t;
+
+void smooth_blend_transition(BlendTransition_t *trans, float dt) {
+    // Calculate maximum change per timestep
+    float max_change = trans->transition_rate * dt;
+
+    // Smooth regen force transition
+    float regen_error = trans->force_regen_target - trans->force_regen_current;
+    if (fabsf(regen_error) < max_change) {
+        trans->force_regen_current = trans->force_regen_target;
+    }
+    else {
+        trans->force_regen_current += (regen_error > 0.0f) ? max_change : -max_change;
+    }
+
+    // Smooth friction force transition
+    float friction_error = trans->force_friction_target - trans->force_friction_current;
+    if (fabsf(friction_error) < max_change) {
+        trans->force_friction_current = trans->force_friction_target;
+    }
+    else {
+        trans->force_friction_current += (friction_error > 0.0f) ? max_change : -max_change;
+    }
+
+    // Ensure total force remains constant during transition
+    // This is key to transparency
+    float force_total_target = trans->force_regen_target + trans->force_friction_target;
+    float force_total_current = trans->force_regen_current + trans->force_friction_current;
+
+    if (fabsf(force_total_current - force_total_target) > 10.0f) {
+        // Adjust friction to maintain total force
+        trans->force_friction_current = force_total_target - trans->force_regen_current;
+    }
+}
+```
+
+#### Brake Noise, Vibration, and Harshness (NVH)
+
+Regen braking is quieter and smoother than friction braking, which can affect user perception:
+
+```c
+typedef struct {
+    float regen_proportion;         // Proportion of regen (0-1)
+    float nvh_score;                // NVH quality score (0-1, higher=better)
+    bool low_speed_creep;           // Enable creep at low speed
+    float creep_torque;             // Creep torque (Nm)
+} BrakeNVH_t;
+
+void optimize_brake_nvh(BrakeNVH_t *nvh, float vehicle_speed) {
+    // 1. At low speeds, reduce regen to avoid NVH issues
+    if (vehicle_speed < 2.0f) {  // Below 2 m/s (7.2 km/h)
+        // Blend to friction for smoother stop
+        nvh->regen_proportion *= (vehicle_speed / 2.0f);
+
+        // Enable creep torque for natural feel (like auto transmission)
+        if (vehicle_speed < 0.5f && nvh->low_speed_creep) {
+            nvh->creep_torque = 20.0f;  // Nm
+        }
+    }
+
+    // 2. Calculate NVH quality score
+    // More regen = better NVH (quieter, smoother)
+    nvh->nvh_score = 0.6f + 0.4f * nvh->regen_proportion;
+}
+```
+
+#### Driver Confidence and Training
+
+```c
+typedef struct {
+    bool first_drive;               // First time driver
+    uint32_t brake_events;          // Number of brake events
+    float avg_regen_usage;          // Average regen usage (0-1)
+    bool coaching_enabled;          // Enable coaching mode
+} BrakeCoaching_t;
+
+void brake_coaching_system(BrakeCoaching_t *coaching) {
+    // Track driver behavior
+    coaching->brake_events++;
+
+    // After initial learning period, provide feedback
+    if (coaching->brake_events > 100 && coaching->coaching_enabled) {
+        // Analyze usage patterns
+        if (coaching->avg_regen_usage < 0.5f) {
+            // Driver not using regen effectively
+            display_message("Tip: Release throttle earlier to maximize energy recovery");
+        }
+    }
+}
+```
+
+---
+
+### References for Section 3.3:
+
+**Books:**
+1. *"Automotive Ergonomics: Driver-Vehicle Interaction"* by Heiner Bubb et al. - Chapter 8 (Pedal Design and Feel)
+2. *"Vehicle Handling Dynamics"* by Masato Abe - Chapter 11 (Brake Feel Engineering)
+
+**Papers:**
+1. Heydari, S., et al. (2016). "Evaluation of Regenerative Braking Effect on Brake Pedal Feel in Electric Vehicles." SAE International Journal of Alternative Powertrains, 5(1), 160-171.
+2. Wei, Z., et al. (2017). "Modeling and Testing of Electro-Mechanical Brake System for Vehicle Control Research." IFAC-PapersOnLine, 50(1), 13137-13142.
+
+**Standards:**
+1. **ISO 2575**: "Road Vehicles - Symbols for Controls, Indicators and Tell-Tales"
+2. **SAE J2954**: User interface guidelines for electric vehicle features
+
+---
+
+### 3.4 Safety and Fault Tolerance
+
+Brake systems are safety-critical. The blending controller must handle faults gracefully and always ensure the vehicle can stop safely.
+
+#### Fault Detection and Management
+
+```c
+typedef enum {
+    BRAKE_FAULT_NONE = 0,
+    BRAKE_FAULT_REGEN_SENSOR,       // Regen sensor failure
+    BRAKE_FAULT_REGEN_ACTUATOR,     // Cannot control motor
+    BRAKE_FAULT_FRICTION_SENSOR,    // Friction brake sensor failure
+    BRAKE_FAULT_FRICTION_ACTUATOR,  // Hydraulic actuator failure
+    BRAKE_FAULT_PEDAL_SENSOR,       // Pedal sensor failure
+    BRAKE_FAULT_COMMUNICATION,      // CAN communication loss
+    BRAKE_FAULT_POWER_LOSS          // Loss of electrical power
+} BrakeFaultType_t;
+
+typedef struct {
+    BrakeFaultType_t active_fault;
+    bool fault_detected;
+    uint32_t fault_timestamp;
+    bool safe_mode_active;
+    float degraded_capability;      // Braking capability (0-1)
+} BrakeFaultManager_t;
+
+void handle_brake_fault(BrakeFaultManager_t *fault) {
+    switch (fault->active_fault) {
+        case BRAKE_FAULT_REGEN_SENSOR:
+        case BRAKE_FAULT_REGEN_ACTUATOR:
+            // Regen unavailable - use friction only
+            disable_regen_braking();
+            set_friction_brake_mode(FRICTION_MODE_FULL);
+            fault->degraded_capability = 1.0f;  // Full capability
+            fault->safe_mode_active = true;
+            display_warning("Regenerative braking unavailable");
+            break;
+
+        case BRAKE_FAULT_FRICTION_SENSOR:
+            // Friction sensor fault - use regen primary, friction backup
+            set_regen_mode(REGEN_MODE_PRIMARY);
+            enable_friction_brake_backup();
+            fault->degraded_capability = 0.8f;  // Reduced capability
+            fault->safe_mode_active = true;
+            display_warning("Brake system degraded - service required");
+            break;
+
+        case BRAKE_FAULT_FRICTION_ACTUATOR:
+            // Critical fault - friction actuator failed
+            // Use regen only but limit vehicle speed
+            disable_friction_braking();
+            set_regen_mode(REGEN_MODE_ONLY);
+            limit_vehicle_speed(50.0f);  // km/h
+            fault->degraded_capability = 0.5f;  // Significantly reduced
+            fault->safe_mode_active = true;
+            display_critical_warning("BRAKE FAULT - REDUCE SPEED");
+            break;
+
+        case BRAKE_FAULT_PEDAL_SENSOR:
+            // Pedal sensor fault - use redundant sensor or limp mode
+            if (pedal_sensor_redundant_available()) {
+                switch_to_redundant_pedal_sensor();
+                fault->degraded_capability = 1.0f;
+                fault->safe_mode_active = false;
+            }
+            else {
+                // Limp mode - fixed braking strategy
+                enable_limp_mode_braking();
+                fault->degraded_capability = 0.6f;
+                fault->safe_mode_active = true;
+                display_critical_warning("BRAKE PEDAL FAULT - SERVICE IMMEDIATELY");
+            }
+            break;
+
+        case BRAKE_FAULT_COMMUNICATION:
+            // CAN communication loss
+            // Revert to local control, disable coordinated functions
+            set_brake_mode(BRAKE_MODE_LOCAL_CONTROL);
+            disable_abs();
+            disable_stability_control();
+            fault->degraded_capability = 0.9f;
+            fault->safe_mode_active = true;
+            display_warning("Communication fault - advanced features unavailable");
+            break;
+
+        case BRAKE_FAULT_POWER_LOSS:
+            // Loss of 12V power
+            // Hydraulic brakes must function mechanically
+            ensure_mechanical_brake_linkage();
+            disable_all_electronic_braking();
+            fault->degraded_capability = 0.7f;  // Manual braking only
+            fault->safe_mode_active = true;
+            display_critical_warning("POWER LOSS - MECHANICAL BRAKES ONLY");
+            break;
+
+        case BRAKE_FAULT_NONE:
+        default:
+            fault->safe_mode_active = false;
+            fault->degraded_capability = 1.0f;
+            break;
+    }
+}
+```
+
+#### Redundancy and Fail-Safe Design
+
+```c
+typedef struct {
+    bool pedal_sensor_primary_ok;
+    bool pedal_sensor_secondary_ok;
+    bool friction_circuit_1_ok;
+    bool friction_circuit_2_ok;
+    bool regen_available;
+    bool abs_available;
+    uint8_t safety_level;           // 0=Critical, 1=Degraded, 2=Normal
+} BrakeRedundancy_t;
+
+void evaluate_brake_safety_level(BrakeRedundancy_t *redundancy) {
+    // Evaluate system health
+    bool pedal_ok = redundancy->pedal_sensor_primary_ok ||
+                   redundancy->pedal_sensor_secondary_ok;
+    bool friction_ok = redundancy->friction_circuit_1_ok &&
+                      redundancy->friction_circuit_2_ok;
+
+    // Determine safety level
+    if (pedal_ok && friction_ok) {
+        if (redundancy->regen_available && redundancy->abs_available) {
+            redundancy->safety_level = 2;  // Normal operation
+        }
+        else {
+            redundancy->safety_level = 1;  // Degraded (friction OK, regen/ABS out)
+        }
+    }
+    else if (pedal_ok && (redundancy->friction_circuit_1_ok ||
+                          redundancy->friction_circuit_2_ok)) {
+        redundancy->safety_level = 1;  // Degraded (one friction circuit out)
+        display_warning("Brake circuit fault - service required");
+    }
+    else {
+        redundancy->safety_level = 0;  // Critical fault
+        display_critical_warning("CRITICAL BRAKE FAULT - STOP VEHICLE SAFELY");
+        trigger_hazard_lights();
+    }
+}
+```
+
+#### Integration with ABS/ESC
+
+```c
+typedef struct {
+    bool abs_active;
+    bool esc_active;
+    float wheel_slip[4];            // Per-wheel slip ratio (0-1)
+    float yaw_rate_error;           // Yaw rate error (rad/s)
+    float regen_force_limit;        // Regen force limit from ABS/ESC (N)
+} ABSESCIntegration_t;
+
+void integrate_abs_esc_with_regen(ABSESCIntegration_t *abs_esc) {
+    // 1. Check if ABS is active on any wheel
+    abs_esc->abs_active = false;
+    for (int i = 0; i < 4; i++) {
+        if (abs_esc->wheel_slip[i] > 0.15f) {  // >15% slip
+            abs_esc->abs_active = true;
+            break;
+        }
+    }
+
+    // 2. If ABS active, reduce/eliminate regen
+    if (abs_esc->abs_active) {
+        // Regen can interfere with ABS wheel speed control
+        // Reduce regen proportionally to worst wheel slip
+        float max_slip = 0.0f;
+        for (int i = 0; i < 4; i++) {
+            if (abs_esc->wheel_slip[i] > max_slip) {
+                max_slip = abs_esc->wheel_slip[i];
+            }
+        }
+
+        // Scale regen based on slip
+        float regen_scale = fmaxf(0.0f, 1.0f - (max_slip / 0.20f));
+        abs_esc->regen_force_limit *= regen_scale;
+
+        log_event("ABS active - regen reduced to %.1f%%", regen_scale * 100.0f);
+    }
+
+    // 3. Check ESC status
+    if (fabsf(abs_esc->yaw_rate_error) > 0.1f) {  // Significant yaw error
+        abs_esc->esc_active = true;
+
+        // ESC needs full authority over individual wheel braking
+        // Disable regen to allow ESC full control
+        abs_esc->regen_force_limit = 0.0f;
+
+        log_event("ESC active - regen disabled");
+    }
+    else {
+        abs_esc->esc_active = false;
+    }
+}
+```
+
+#### Emergency Braking Assist
+
+```c
+typedef struct {
+    float brake_pedal_force;        // Pedal force (N)
+    float brake_pedal_velocity;     // Pedal application rate (N/s)
+    float decel_current;            // Current deceleration (m/s²)
+    bool emergency_detected;        // Emergency braking detected
+    float boost_factor;             // Brake boost factor (1.0-2.0)
+} EmergencyBrakeAssist_t;
+
+void emergency_brake_assist(EmergencyBrakeAssist_t *eba) {
+    // Detect emergency braking intent
+    // High pedal force + fast application = emergency
+    if (eba->brake_pedal_force > 300.0f &&          // >300 N
+        eba->brake_pedal_velocity > 2000.0f) {      // >2000 N/s
+
+        eba->emergency_detected = true;
+
+        // Apply maximum available braking
+        // Boost factor increases braking beyond normal pedal mapping
+        eba->boost_factor = 1.5f;
+
+        // Immediately apply max friction + max regen
+        apply_maximum_braking();
+
+        // Activate hazard lights
+        activate_hazard_lights();
+
+        log_event("Emergency braking assist activated");
+    }
+    else if (eba->emergency_detected &&
+             eba->brake_pedal_force < 100.0f) {
+        // Emergency over - return to normal
+        eba->emergency_detected = false;
+        eba->boost_factor = 1.0f;
+
+        log_event("Emergency braking assist deactivated");
+    }
+}
+```
+
+---
+
+### References for Section 3.4:
+
+**Standards:**
+1. **ISO 26262**: "Road Vehicles - Functional Safety" (ASIL D for brake systems)
+2. **FMVSS 135**: "Light Vehicle Brake Systems" (redundancy requirements)
+3. **ECE R13-H**: "Approval of Passenger Cars with Regard to Braking" (Annex 13: Electric Regenerative Braking)
+
+**Books:**
+1. *"Safety-Critical Systems Handbook"* by David J. Smith and Kenneth G.L. Simpson - Chapter 15 (Automotive Safety)
+2. *"Automotive Software Engineering"* by Jörg Schäuffele and Thomas Zurawka - Chapter 12 (Fail-Safe Design)
+
+**Papers:**
+1. Savitski, D., et al. (2016). "Wheel Slip Control for Electric Vehicles with In-Wheel Motors." Vehicle System Dynamics, 54(10), 1366-1389.
+2. Haus, B., et al. (2015). "Fail-Operational Automotive Brake by Wire System." IEEE Intelligent Vehicles Symposium.
+
+**Application Notes:**
+1. **Bosch**: "Functional Safety for Brake-by-Wire Systems" (Technical Paper)
+2. **Continental**: "Redundancy Concepts for Electric Brake Systems" (2020 White Paper)
+
+---
+
+**End of Section 3: Braking Strategy and Blending**
+
+---
+
