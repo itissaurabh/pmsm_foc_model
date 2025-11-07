@@ -3517,3 +3517,364 @@ For 400V DC system:
 
 ---
 
+## 9. EMI/EMC Considerations
+
+Electromagnetic Interference (EMI) and Electromagnetic Compatibility (EMC) are critical for motor controllers to meet regulatory standards and avoid interference with other systems.
+
+### 9.1 EMI Sources in Motor Drives
+
+**Primary EMI Sources:**
+
+1. **Switching Transients** (Main source):
+   ```
+   High dv/dt and di/dt during MOSFET switching creates:
+   - Conducted EMI (150 kHz - 30 MHz)
+   - Radiated EMI (30 MHz - 1 GHz)
+
+   Example:
+     dv/dt = 10 V/ns (SiC MOSFET)
+     Creates harmonics up to 100+ MHz
+   ```
+
+2. **PWM Fundamental and Harmonics**:
+   ```
+   PWM frequency: 10-20 kHz
+   Harmonics extend to:
+   - 3rd harmonic: 30-60 kHz
+   - 5th harmonic: 50-100 kHz
+   - 7th harmonic: 70-140 kHz
+   - ... up to 50th harmonic or more
+   ```
+
+3. **Common-Mode Voltage**:
+   ```
+   Motor phase voltage relative to ground switches rapidly
+   Creates common-mode current through parasitic capacitance:
+
+   I_cm = C_parasitic × dv/dt
+
+   Motor winding-to-ground capacitance: 100-1000 pF typical
+   ```
+
+4. **Motor Cables**:
+   ```
+   Long unshielded motor cables act as antennas
+   Radiate EMI efficiently at high frequencies
+   Cable length matters: Longer cable = more radiation
+   ```
+
+### 9.2 Conducted and Radiated Emissions
+
+**Conducted Emissions:**
+
+Noise propagating through wires/cables (150 kHz - 30 MHz per CISPR 25)
+
+```
+Two types:
+
+1. Differential Mode (DM):
+   - Current flows in loop (DC+ to DC-, or phase A to phase B)
+   - Caused by switching current ripple
+   - Lower frequency content
+
+2. Common Mode (CM):
+   - Current flows in same direction on all conductors
+   - Returns through ground/chassis
+   - Higher frequency content
+   - More difficult to filter
+```
+
+**Measurement:**
+
+```
+LISN (Line Impedance Stabilization Network):
+  - Standardized measurement setup
+  - Provides defined impedance (50Ω)
+  - Separates DM and CM noise
+  - Frequency range: 150 kHz - 108 MHz
+```
+
+**Radiated Emissions:**
+
+EM fields radiating into free space (30 MHz - 1 GHz per CISPR 25)
+
+```
+Main radiators:
+  - Motor cables (antenna)
+  - PCB traces (unintentional antenna)
+  - Enclosure openings/seams
+
+Measurement:
+  - 1m or 3m distance (automotive: 1m)
+  - Anechoic chamber or open-area test site (OATS)
+  - Frequency: 30 MHz - 1 GHz (sometimes up to 6 GHz)
+```
+
+### 9.3 EMI Filtering and Suppression
+
+**Input EMI Filter (DC Bus):**
+
+```
+Typical 3-stage filter:
+
+Battery/DC ──→ [DM Filter] ──→ [CM Filter] ──→ [Bulk Cap] ──→ Inverter
+             Source
+
+Stage 1: Differential Mode Filter
+  - LC filter: L (1-10 μH), C (1-10 μF film)
+  - Attenuates DM noise (switching ripple)
+  - Cutoff frequency: 10-50 kHz
+
+Stage 2: Common Mode Choke
+  - Two windings on common core
+  - High impedance to CM noise
+  - Low impedance to DM current (motor power)
+  - Inductance: 10-100 μH per winding
+
+Stage 3: Y-Capacitors (CM Filter)
+  - Small caps from DC+/DC- to chassis ground
+  - Typical: 1-10 nF (limited by safety standards)
+  - Safety rated (Y1 or Y2 class)
+
+Example design:
+  L_dm = 4.7 μH
+  C_dm = 4.7 μF (film, X2 class)
+  CM choke = 47 μH
+  C_Y = 2.2 nF per rail (Y2 class)
+```
+
+**Motor Cable Filtering:**
+
+```
+Options:
+
+1. Common-Mode Choke at Motor:
+   - Three phase windings on common core
+   - Impedes common-mode current
+   - Typical: 10-50 μH
+   - Most effective solution
+
+2. Output dv/dt Filter:
+   - Small LC filter at inverter output
+   - Slows down phase voltage rise time
+   - Reduces bearing currents
+   - L: 5-20 μH, C: 100-470 nF
+
+3. Ferrite Beads on Cables:
+   - Snap-on ferrite cores
+   - Good for 10-100 MHz
+   - Easy retrofit solution
+
+4. Shielded Motor Cables:
+   - 360° shield termination at both ends
+   - Shield to chassis ground
+   - Reduces radiated emissions
+   - More expensive
+```
+
+**PCB-Level EMI Reduction:**
+
+```
+1. Spread Spectrum PWM:
+   - Modulate PWM frequency ±5-10%
+   - Spreads energy across frequency band
+   - Reduces peak spectral components by 10-20 dB
+   - Implemented in firmware/MCU
+
+2. Soft Switching (if possible):
+   - ZVS (Zero Voltage Switching)
+   - ZCS (Zero Current Switching)
+   - Reduces dv/dt and di/dt
+   - Requires special topology or control
+
+3. Multi-Level Inverter:
+   - 3-level or 5-level instead of 2-level
+   - Lower dv/dt per step
+   - Reduces EMI and bearing currents
+   - More complex and expensive
+```
+
+### 9.4 Shielding and Cable Design
+
+**Enclosure Shielding:**
+
+```
+Metal enclosure requirements:
+  - Aluminum or steel housing
+  - All seams welded, overlapped, or gasketed
+  - Openings <λ/20 at highest frequency of concern
+  - Example: 1 GHz → λ = 30cm → max opening = 15mm
+
+Ventilation openings:
+  - Use honeycomb vents (not slits)
+  - Metal-to-metal contact maintained
+  - EMI gaskets at removable panels
+```
+
+**Cable Shielding Best Practices:**
+
+```
+1. Motor Phase Cables:
+   - Use shielded twisted triples
+   - 360° shield termination (not pigtail!)
+   - Terminate shield at both inverter and motor
+   - Ground to chassis at both ends
+
+2. DC Bus Cables:
+   - Twisted pair (DC+ and DC-)
+   - Shielded if >1m length
+   - Large conductors for high current
+   - Keep short and close to metal chassis
+
+3. Signal/Sensor Cables:
+   - Twisted pair for each signal
+   - Individual or overall shield
+   - Ground shield at one end only (avoid ground loops)
+   - Keep away from motor cables (>50mm separation)
+```
+
+**Shield Termination Methods:**
+
+```
+Bad: Pigtail termination (creates loop, ineffective)
+      Shield ─┐
+              │ (pigtail, 50mm)
+              └─→ Ground
+
+Good: 360° termination (low impedance, effective)
+      Shield ═══╗
+               ║ (connector with 360° shield clamp)
+      Chassis ══╝
+
+Use: Cable glands, backshells, EMI connector housings
+```
+
+### 9.5 Standards and Compliance Testing
+
+**Automotive Standards:**
+
+```
+CISPR 25 (Component EMI):
+  - Conducted emissions: 150 kHz - 108 MHz
+  - Radiated emissions: 150 kHz - 2.5 GHz
+  - Limits: Class 3-5 (Class 5 most stringent)
+  - Test setup: 1m antenna distance
+
+ISO 11452 (Immunity):
+  - RF immunity testing
+  - Frequency: 10 kHz - 18 GHz
+  - Field strength: 100-200 V/m typical
+
+SAE J1113 (Automotive EMC):
+  - US standard (similar to ISO 11452)
+  - Conducted and radiated immunity
+```
+
+**Industrial Standards:**
+
+```
+IEC 61800-3 (Adjustable Speed Drives):
+  - Category C1: Residential (strict limits)
+  - Category C2: Commercial/light industrial
+  - Category C3: Industrial (relaxed limits)
+  - Category C4: Industrial with restrictions
+
+EN 55011 (Industrial Equipment):
+  - Group 1: No intentional RF generation
+  - Group 2: Intentional RF (e.g., induction heating)
+  - Class A: Industrial environments
+  - Class B: Residential (most stringent)
+```
+
+**FCC Part 15 (USA):**
+
+```
+Class A: Industrial/commercial
+  - Conducted: 0.15-30 MHz
+  - Radiated: 30 MHz - 1 GHz
+  - Limits ~10 dB relaxed vs Class B
+
+Class B: Residential
+  - Stricter limits
+  - Required for consumer products
+```
+
+**Typical Compliance Process:**
+
+```
+1. Pre-compliance Testing (in-house):
+   - Near-field probes
+   - Spectrum analyzer
+   - Find problem areas early
+   - Cost: Equipment $5k-$50k
+
+2. Full Compliance Testing (accredited lab):
+   - Conducted emissions (LISN setup)
+   - Radiated emissions (chamber or OATS)
+   - Immunity testing (if required)
+   - Cost: $10k-$50k per test cycle
+
+3. Iterate as Needed:
+   - Fix failures (filters, shielding, layout)
+   - Re-test
+   - Budget 2-3 test cycles typically
+
+4. Certification:
+   - Submit test reports
+   - Receive certificate
+   - Maintain for product lifetime
+```
+
+**EMI Debug Tools:**
+
+```
+Essential tools:
+  - Spectrum analyzer (9 kHz - 3 GHz)
+  - Near-field probe set (E-field and H-field)
+  - Current probe (measure cable currents)
+  - LISN (for conducted emissions pre-testing)
+
+Cost range:
+  - Basic setup: $5k-$15k
+  - Professional setup: $30k-$100k
+  - Lab testing: $10k-$50k per submission
+```
+
+---
+
+### References for Section 9:
+
+**Standards Documents:**
+1. **CISPR 25**: Vehicles, boats, and internal combustion engines - Radio disturbance characteristics
+2. **IEC 61800-3**: Adjustable speed electrical power drive systems - EMC requirements
+3. **ISO 11452**: Road vehicles - Component test methods for electrical disturbances
+4. **FCC Part 15**: Radio Frequency Devices
+
+**Books:**
+1. *"Electromagnetic Compatibility Engineering"* by Henry Ott - Comprehensive EMC reference
+2. *"EMI Filter Design"* by Richard Lee Ozenbaugh
+3. *"Automotive EMC"* by Eur Ing Chatterton and Williams
+
+**Application Notes:**
+1. **Texas Instruments**: "EMI Considerations for Motor Drives" (SLVA838)
+2. **Infineon**: "EMC Design for Motor Control Applications" (AN2017-12)
+3. **Wurth Elektronik**: "EMI Filter Design Guide"
+4. **Murata**: "Common Mode Choke Coils for Automotive Applications"
+
+**Articles:**
+1. "Motor Drive EMI Reduction Techniques" - IEEE Power Electronics Society
+2. "Shielding and Grounding for Motor Controllers" - EDN Magazine
+3. "Understanding Common-Mode Chokes" - Power Electronics Magazine
+
+**Videos:**
+1. **Keysight Technologies**: "EMI/EMC Testing Basics" (YouTube series)
+2. **Clemson University Vehicular Electronics Lab**: "Automotive EMC" (YouTube)
+3. **Lee Ritchey**: "EMI and Signal Integrity" (YouTube)
+
+**Test Labs (Examples):**
+1. **Automotive**: TÜV, UL, Intertek, SGS
+2. **Industrial**: CSA, CE Mark testing houses
+3. **FCC**: Authorized test labs (search FCC database)
+
+---
+
