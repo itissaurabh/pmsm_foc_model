@@ -4557,3 +4557,755 @@ START (PWM interrupt at 10 kHz)
 
 *End of Section 6 - Field Oriented Control Theory*
 
+---
+
+## Section 7: Control System Architecture and Implementation
+
+### Introduction
+
+Having learned the FOC algorithm theory in Section 6, we now focus on the **practical system architecture** required to implement FOC on embedded microcontrollers. This section covers:
+- Real-time software architecture and state machines
+- Interrupt structure and timing coordination
+- Hardware interfacing (ADC, PWM, Hall sensors, communication)
+- Fault detection and protection mechanisms
+- Performance optimization and debugging techniques
+
+**The challenge:** FOC requires precise timing, fast computation, and reliable fault handling - all running on resource-constrained microcontrollers at 10-20 kHz control rates.
+
+### 7.1 Overall System Architecture
+
+#### 7.1.1 Hardware Components
+
+A typical PMSM FOC system consists of:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    MICROCONTROLLER (MCU)                     │
+│  ┌────────────┐  ┌──────────┐  ┌─────────┐  ┌──────────┐  │
+│  │    CPU     │  │  FPU/DSP │  │  Timers │  │   ADC    │  │
+│  │ (Cortex-M) │  │  Engine  │  │  (PWM)  │  │(12-bit)  │  │
+│  └────────────┘  └──────────┘  └─────────┘  └──────────┘  │
+│  ┌────────────┐  ┌──────────┐  ┌─────────┐  ┌──────────┐  │
+│  │   NVIC     │  │   GPIO   │  │  UART/  │  │   DMA    │  │
+│  │(Interrupts)│  │  (Hall)  │  │   CAN   │  │          │  │
+│  └────────────┘  └──────────┘  └─────────┘  └──────────┘  │
+└───────────────────────────────┬─────────────────────────────┘
+                                │
+                    ┌───────────┼───────────┐
+                    │           │           │
+            ┌───────▼────┐  ┌──▼───────┐  ┌▼──────────┐
+            │   Gate     │  │ Current  │  │   Hall    │
+            │  Drivers   │  │ Sensors  │  │  Sensors  │
+            │  (IR2101)  │  │(ACS712)  │  │ (A3144)   │
+            └───────┬────┘  └──┬───────┘  └┬──────────┘
+                    │          │           │
+            ┌───────▼──────────▼───────────▼────┐
+            │        3-PHASE INVERTER            │
+            │  (6 IGBTs or MOSFETs in bridge)   │
+            └───────────────┬────────────────────┘
+                            │
+                    ┌───────▼────────┐
+                    │   PMSM MOTOR   │
+                    │  with Hall     │
+                    │   Sensors      │
+                    └────────────────┘
+```
+
+**Key hardware requirements for FOC:**
+
+1. **MCU with FPU:** ARM Cortex-M4/M7 or better (32-bit floating-point)
+2. **Advanced timer:** Center-aligned PWM with dead-time insertion
+3. **Fast ADC:** 12-bit, <2 μs conversion time, simultaneous sampling preferred
+4. **DMA:** For ADC→Memory transfer without CPU intervention
+5. **GPIO:** For Hall sensor reading with edge detection
+6. **Communication:** UART/CAN for monitoring and parameter adjustment
+
+**Popular MCU families for motor control:**
+
+| Manufacturer | Series | Core | Clock | FPU | Motor Features |
+|--------------|--------|------|-------|-----|----------------|
+| STMicroelectronics | STM32G4 | Cortex-M4 | 170 MHz | Yes | Advanced timers, fast ADC, CORDIC |
+| Texas Instruments | TMS320F28x | C28x | 200 MHz | Yes | Dedicated motor control peripherals |
+| Infineon | XMC4000 | Cortex-M4 | 144 MHz | Yes | POSIF for Hall/Encoder |
+| NXP | LPC55S6x | Cortex-M33 | 150 MHz | Yes | PowerQuad DSP accelerator |
+| Microchip | dsPIC33 | dsPIC | 100 MIPS | DSP | Motor Control PWM, QEI |
+
+#### 7.1.2 Software Architecture Layers
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              APPLICATION LAYER                          │
+│  - User interface                                       │
+│  - Motion profiles (speed/position trajectories)       │
+│  - Parameter tuning and monitoring                     │
+└──────────────────┬──────────────────────────────────────┘
+                   │
+┌──────────────────▼──────────────────────────────────────┐
+│            CONTROL ALGORITHM LAYER                      │
+│  - FOC control loops (speed, current)                  │
+│  - Reference frame transformations                      │
+│  - State machine (startup, run, fault, stop)           │
+│  - Safety monitoring and fault detection               │
+└──────────────────┬──────────────────────────────────────┘
+                   │
+┌──────────────────▼──────────────────────────────────────┐
+│           HARDWARE ABSTRACTION LAYER (HAL)              │
+│  - ADC driver (current measurement)                    │
+│  - PWM driver (inverter control)                       │
+│  - Hall sensor interface                                │
+│  - Communication drivers (UART, CAN)                   │
+└──────────────────┬──────────────────────────────────────┘
+                   │
+┌──────────────────▼──────────────────────────────────────┐
+│              HARDWARE LAYER                             │
+│  - Registers, peripherals, interrupts                  │
+│  - CMSIS (ARM Cortex Microcontroller Software)         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 7.2 Real-Time Control Timing
+
+#### 7.2.1 Critical Time Constraints
+
+FOC has strict timing requirements:
+
+**PWM Period (T_PWM):**
+```
+f_PWM = 10 kHz  →  T_PWM = 100 μs
+```
+
+**Within each PWM period, we must:**
+1. Trigger ADC conversion (~1 μs)
+2. Wait for conversion complete (~2 μs)
+3. Read ADC values (~0.5 μs)
+4. Execute FOC algorithm (~20-40 μs)
+5. Update PWM duty cycles (~0.5 μs)
+6. Leave margin for other tasks (~50 μs)
+
+**Total:** ~25-45 μs used, leaving ~55-75 μs spare
+
+**Timing diagram for one PWM cycle:**
+
+```
+    PWM Period = 100 μs
+    ├─────────────────────────────────────────────────────┤
+
+Timer      PWM         ADC                    FOC
+Counter    Output      Trigger               Algorithm
+  ↓          ↓           ↓                      ↓
+────┐     ┌────┐     ┌──────┐               ┌────────┐
+    │     │    │     │ ADC  │               │  FOC   │
+    └─────┘    └─────┘ Conv │               │  Calc  │
+    ↑          ↑      └──────┘               └────────┘
+    │          │        2μs                     30μs
+    │          │    ├───┤                   ├─────────┤
+    │          │
+    │          PWM Update (next cycle)
+    │
+    Center of PWM
+    (best time for current sampling)
+```
+
+**Why sample at PWM center?**
+- Current ripple is minimum
+- Both high-side and low-side switches are conducting
+- Most accurate current measurement
+
+#### 7.2.2 Multi-Rate Control Structure
+
+Different control tasks run at different rates:
+
+| Task | Frequency | Period | Trigger | Priority |
+|------|-----------|--------|---------|----------|
+| Current loop | 10 kHz | 100 μs | PWM timer | Highest |
+| Speed loop | 1 kHz | 1 ms | Software counter | High |
+| Communication | 100 Hz | 10 ms | Timer/polling | Medium |
+| User interface | 10-50 Hz | 20-100 ms | Main loop | Low |
+| Fault monitoring | 10 kHz | 100 μs | Within ISR | Highest |
+
+**Implementation using counters:**
+
+```c
+void PWM_Timer_ISR(void) {
+    // Called every 100 μs (10 kHz)
+    static uint16_t speed_loop_counter = 0;
+    static uint16_t comm_counter = 0;
+
+    // ALWAYS execute current loop
+    FOC_CurrentLoop();  // ~30 μs
+
+    // Execute speed loop every 10th cycle (1 kHz)
+    if (++speed_loop_counter >= 10) {
+        speed_loop_counter = 0;
+        FOC_SpeedLoop();  // ~5 μs
+    }
+
+    // Execute communication every 100th cycle (100 Hz)
+    if (++comm_counter >= 100) {
+        comm_counter = 0;
+        flag_send_telemetry = true;  // Set flag for main loop
+    }
+}
+```
+
+### 7.3 Interrupt Structure and Priorities
+
+#### 7.3.1 Interrupt Priority Levels
+
+**NVIC (Nested Vectored Interrupt Controller) priority assignment:**
+
+Lower number = higher priority (0 is highest)
+
+| Interrupt | Priority | Frequency | Purpose |
+|-----------|----------|-----------|---------|
+| Hard Fault | -3 | On fault | System crash handler |
+| PWM Timer + ADC Done | 0 | 10 kHz | Main FOC control loop |
+| Hall sensor edge | 1 | Variable | Position capture |
+| Overcurrent fault | 1 | On fault | Emergency shutdown |
+| Communication RX | 3 | Sporadic | Receive commands |
+| Systick | 15 | 1 kHz | OS tick (if using RTOS) |
+
+**Critical design rule:** PWM+ADC interrupt must have highest priority (except faults) to ensure deterministic control timing.
+
+#### 7.3.2 Interrupt Service Routine Structure
+
+**PWM Timer ISR (main control loop):**
+
+```c
+void TIM1_UP_TIM10_IRQHandler(void) {
+    // Clear interrupt flag
+    TIM1->SR &= ~TIM_SR_UIF;
+
+    // Start execution time measurement (debug)
+    DEBUG_PIN_HIGH();
+
+    // =========================================
+    // CRITICAL SECTION - Minimize latency
+    // =========================================
+
+    // 1. Read ADC results (DMA transferred)
+    float ia = ADC_RESULT[0] * ADC_SCALE - ADC_OFFSET;
+    float ib = ADC_RESULT[1] * ADC_SCALE - ADC_OFFSET;
+
+    // 2. Read Hall sensors
+    uint8_t hall_state = READ_HALL_SENSORS();
+
+    // 3. Execute FOC algorithm
+    FOC_ControlLoop(ia, ib, hall_state);
+
+    // 4. Update PWM duty cycles
+    UPDATE_PWM_DUTIES(duty_a, duty_b, duty_c);
+
+    // 5. Fault monitoring
+    if (DETECT_FAULT()) {
+        EMERGENCY_STOP();
+        state = STATE_FAULT;
+    }
+
+    // End execution time measurement
+    DEBUG_PIN_LOW();
+
+    // Optional: Measure max execution time
+    execution_time_us = GET_EXECUTION_TIME();
+    if (execution_time_us > max_execution_time_us) {
+        max_execution_time_us = execution_time_us;
+    }
+}
+```
+
+**Hall sensor edge interrupt:**
+
+```c
+void EXTI0_IRQHandler(void) {
+    // Hall sensor state change detected
+
+    // Clear interrupt flag
+    EXTI->PR = EXTI_PR_PR0;
+
+    // Capture timestamp
+    uint32_t current_time = TIM2->CNT;  // Free-running timer
+
+    // Calculate speed from time between edges
+    uint32_t delta_time = current_time - last_hall_time;
+    last_hall_time = current_time;
+
+    // Speed = 60° / (delta_time × pole_pairs)
+    // Convert to RPM or rad/s
+    measured_speed = calculate_speed(delta_time);
+
+    // Read new Hall state
+    hall_state = READ_HALL_SENSORS();
+
+    // Update position estimate
+    rotor_position = DECODE_HALL_POSITION(hall_state);
+}
+```
+
+### 7.4 State Machine Architecture
+
+#### 7.4.1 Motor Control States
+
+A robust FOC system uses a finite state machine (FSM):
+
+```
+               ┌──────────────┐
+         ┌────→│     INIT     │←────┐
+         │     └──────┬───────┘     │
+         │            │             │
+         │       [initialize]       │
+         │            │             │
+         │     ┌──────▼───────┐     │
+         │     │     IDLE     │     │ [reset]
+         │     └──────┬───────┘     │
+         │            │             │
+         │       [enable]           │
+         │            │             │
+         │     ┌──────▼───────┐     │
+         │     │   ALIGNMENT  │     │
+         │     └──────┬───────┘     │
+         │            │             │
+         │    [aligned, 500ms]      │
+         │            │             │
+         │     ┌──────▼───────┐     │
+         ├─────│   RUNNING    │     │
+         │     └──────┬───────┘     │
+         │            │             │
+         │       [disable or        │
+         │        overcurrent]      │
+         │            │             │
+         │     ┌──────▼───────┐     │
+         └─────│    FAULT     │─────┘
+               └──────────────┘
+```
+
+**State descriptions:**
+
+1. **INIT:** Power-on initialization
+   - Configure peripherals (timers, ADC, GPIO)
+   - Load parameters from EEPROM/flash
+   - Self-test (optional)
+   - Transition to IDLE when complete
+
+2. **IDLE:** Ready but not running
+   - PWM disabled (all low-side on for brake, or all off)
+   - Monitor enable command
+   - Accept parameter updates
+   - Transition to ALIGNMENT on enable
+
+3. **ALIGNMENT:** Rotor position detection
+   - Apply DC current to phase A (or known position)
+   - Wait 100-500 ms for rotor to align
+   - Initialize integrators to zero
+   - Transition to RUNNING when aligned
+
+4. **RUNNING:** Normal FOC operation
+   - Execute current and speed loops
+   - Monitor faults continuously
+   - Respond to speed/torque commands
+   - Transition to FAULT on error, IDLE on disable
+
+5. **FAULT:** Error detected
+   - Immediately disable PWM (safe stop)
+   - Latch fault code
+   - Prevent restart until fault cleared
+   - Transition to IDLE after fault acknowledgment
+
+#### 7.4.2 State Machine Implementation
+
+```c
+typedef enum {
+    STATE_INIT,
+    STATE_IDLE,
+    STATE_ALIGNMENT,
+    STATE_RUNNING,
+    STATE_FAULT
+} MotorState_t;
+
+typedef struct {
+    MotorState_t current_state;
+    uint32_t state_enter_time;
+    uint16_t fault_code;
+    bool enable_request;
+    bool fault_acknowledged;
+} StateMachine_t;
+
+StateMachine_t sm = {
+    .current_state = STATE_INIT,
+    .fault_code = 0
+};
+
+void StateMachine_Update(void) {
+    // Called every PWM cycle (10 kHz)
+
+    switch (sm.current_state) {
+
+        case STATE_INIT:
+            // Initialize hardware
+            if (Hardware_Init() == SUCCESS) {
+                sm.current_state = STATE_IDLE;
+                sm.state_enter_time = get_time_ms();
+            }
+            break;
+
+        case STATE_IDLE:
+            PWM_Disable();
+            FOC_Reset();  // Clear integrators
+
+            if (sm.enable_request && !sm.fault_code) {
+                sm.current_state = STATE_ALIGNMENT;
+                sm.state_enter_time = get_time_ms();
+            }
+            break;
+
+        case STATE_ALIGNMENT:
+            {
+                // Apply DC current to align rotor
+                static bool first_entry = true;
+                if (first_entry) {
+                    Rotor_Align_Start();
+                    first_entry = false;
+                }
+
+                // Wait for alignment (500 ms)
+                uint32_t elapsed = get_time_ms() - sm.state_enter_time;
+                if (elapsed > 500) {
+                    first_entry = true;
+                    sm.current_state = STATE_RUNNING;
+                    sm.state_enter_time = get_time_ms();
+                }
+            }
+            break;
+
+        case STATE_RUNNING:
+            // Execute FOC (done in ISR)
+            // Check for faults
+            if (Check_Faults(&sm.fault_code) || !sm.enable_request) {
+                sm.current_state = STATE_FAULT;
+                sm.state_enter_time = get_time_ms();
+                PWM_Disable();
+            }
+            break;
+
+        case STATE_FAULT:
+            PWM_Disable();
+
+            // Wait for fault acknowledgment
+            if (sm.fault_acknowledged) {
+                sm.fault_code = 0;
+                sm.fault_acknowledged = false;
+                sm.enable_request = false;
+                sm.current_state = STATE_IDLE;
+            }
+            break;
+    }
+}
+```
+
+### 7.5 Fault Detection and Protection
+
+#### 7.5.1 Fault Types
+
+A safe motor drive must detect and handle:
+
+| Fault | Detection Method | Response Time | Action |
+|-------|------------------|---------------|--------|
+| Overcurrent | ADC threshold or comparator | <10 μs | Emergency stop |
+| Overvoltage DC bus | ADC monitoring | <100 μs | Disable PWM, brake |
+| Undervoltage DC bus | ADC monitoring | <1 ms | Warning or stop |
+| Overtemperature | Thermistor/NTC sensor | <1 s | Reduce current, then stop |
+| Hall sensor error | Invalid state or stuck | <1 ms | Stop if critical |
+| Encoder error | Position discontinuity | <1 ms | Fallback or stop |
+| Motor stall | Speed error timeout | <100 ms | Stop or retry |
+| Control timeout | Watchdog timer | <10 ms | Safe stop |
+| Communication loss | Heartbeat timeout | <100 ms | Safe stop |
+
+#### 7.5.2 Overcurrent Protection
+
+**Hardware protection (fastest):**
+
+```c
+// Configure analog comparator for overcurrent
+// Threshold: 12A = 2.4V with 5A/V sensor
+COMP1->CSR |= COMP_CSR_COMPxEN;  // Enable comparator
+DAC1->DHR12R1 = (2.4 / 3.3) * 4095;  // Set threshold
+COMP1->CSR |= COMP_CSR_COMPxOUTSEL_TIM1BKIN;  // Connect to PWM break
+
+// When comparator triggers:
+// - PWM outputs forced LOW immediately (hardware)
+// - Break interrupt generated
+void TIM1_BRK_IRQHandler(void) {
+    sm.fault_code = FAULT_OVERCURRENT;
+    sm.current_state = STATE_FAULT;
+    TIM1->SR &= ~TIM_SR_BIF;  // Clear flag
+}
+```
+
+**Software protection (slower but configurable):**
+
+```c
+// In main FOC ISR
+float ia_abs = fabsf(ia);
+float ib_abs = fabsf(ib);
+float ic_abs = fabsf(ia + ib);  // Reconstruct ic
+
+if (ia_abs > CURRENT_LIMIT || ib_abs > CURRENT_LIMIT || ic_abs > CURRENT_LIMIT) {
+    fault_current_counter++;
+    if (fault_current_counter > 3) {  // 3 consecutive samples
+        sm.fault_code = FAULT_OVERCURRENT;
+        sm.current_state = STATE_FAULT;
+        PWM_Disable();
+    }
+} else {
+    fault_current_counter = 0;  // Reset counter
+}
+```
+
+#### 7.5.3 Fault Logging and Diagnostics
+
+**Fault code definitions:**
+
+```c
+#define FAULT_NONE                  0x0000
+#define FAULT_OVERCURRENT_PHASE_A   0x0001
+#define FAULT_OVERCURRENT_PHASE_B   0x0002
+#define FAULT_OVERCURRENT_PHASE_C   0x0004
+#define FAULT_OVERVOLTAGE           0x0008
+#define FAULT_UNDERVOLTAGE          0x0010
+#define FAULT_OVERTEMPERATURE       0x0020
+#define FAULT_HALL_ERROR            0x0040
+#define FAULT_MOTOR_STALL           0x0080
+#define FAULT_CONTROL_TIMEOUT       0x0100
+#define FAULT_COMMUNICATION_LOSS    0x0200
+#define FAULT_INVALID_PARAMETER     0x0400
+```
+
+**Fault logging structure:**
+
+```c
+typedef struct {
+    uint16_t fault_code;
+    uint32_t timestamp;      // Time when fault occurred
+    float ia, ib, ic;        // Currents at fault
+    float vdc;               // DC bus voltage
+    float speed;             // Motor speed
+    float temperature;       // Temperature
+    uint8_t hall_state;      // Hall sensor state
+} FaultLog_t;
+
+#define FAULT_LOG_SIZE 10
+FaultLog_t fault_log[FAULT_LOG_SIZE];
+uint8_t fault_log_index = 0;
+
+void Log_Fault(uint16_t fault_code) {
+    FaultLog_t *entry = &fault_log[fault_log_index];
+
+    entry->fault_code = fault_code;
+    entry->timestamp = get_time_ms();
+    entry->ia = ia_measured;
+    entry->ib = ib_measured;
+    entry->ic = ic_measured;
+    entry->vdc = vdc_measured;
+    entry->speed = omega_measured;
+    entry->temperature = temp_measured;
+    entry->hall_state = hall_state;
+
+    fault_log_index = (fault_log_index + 1) % FAULT_LOG_SIZE;
+}
+```
+
+### 7.6 Performance Optimization Techniques
+
+#### 7.6.1 Computational Optimization
+
+**1. Use hardware FPU:**
+
+```c
+// Enable FPU in startup code
+SCB->CPACR |= (0xF << 20);  // Enable CP10 and CP11 (FPU)
+
+// Compiler flags (GCC)
+-mfloat-abi=hard -mfpu=fpv4-sp-d16
+
+// Use float (32-bit) not double (64-bit)
+float x = 1.5f;  // Good
+double y = 1.5;  // Avoid (slower, uses software emulation)
+```
+
+**2. Lookup tables for trigonometric functions:**
+
+```c
+#define SIN_TABLE_SIZE 360
+float sin_table[SIN_TABLE_SIZE];
+
+// Initialize once
+void Init_SinTable(void) {
+    for (int i = 0; i < SIN_TABLE_SIZE; i++) {
+        sin_table[i] = sinf(i * DEG_TO_RAD);
+    }
+}
+
+// Fast lookup (replaces sinf())
+float sin_lookup(float angle_rad) {
+    int index = (int)(angle_rad * RAD_TO_DEG) % 360;
+    if (index < 0) index += 360;
+    return sin_table[index];
+}
+
+// Even faster: CORDIC hardware accelerator (STM32G4)
+float sin_cordic(float angle_rad) {
+    CORDIC->WDATA = angle_rad * (1 << 30) / M_PI;  // Format Q1.31
+    return CORDIC->RDATA / (float)(1 << 30);       // Read result
+}
+```
+
+**3. Avoid divisions (use multiplication):**
+
+```c
+// Slow
+float result = value / 3.14159f;
+
+// Fast (precompute reciprocal)
+#define INV_PI 0.318309886f
+float result = value * INV_PI;
+```
+
+**4. Use DMA for ADC:**
+
+```c
+// DMA transfers ADC results to memory without CPU
+uint16_t adc_results[2];  // ia, ib
+
+void ADC_DMA_Init(void) {
+    // Configure DMA: ADC → Memory
+    DMA1_Channel1->CPAR = (uint32_t)&ADC1->DR;
+    DMA1_Channel1->CMAR = (uint32_t)adc_results;
+    DMA1_Channel1->CNDTR = 2;  // 2 transfers
+    DMA1_Channel1->CCR = DMA_CCR_MINC | DMA_CCR_CIRC | DMA_CCR_EN;
+}
+
+// In ISR, just read from array (DMA already updated it)
+float ia = adc_results[0] * scale;
+float ib = adc_results[1] * scale;
+```
+
+#### 7.6.2 Debugging and Profiling
+
+**1. Execution time measurement:**
+
+```c
+// Use GPIO toggle to visualize timing on oscilloscope
+#define DEBUG_PIN_HIGH()  GPIOA->BSRR = GPIO_PIN_5
+#define DEBUG_PIN_LOW()   GPIOA->BSRR = (GPIO_PIN_5 << 16)
+
+void FOC_ISR(void) {
+    DEBUG_PIN_HIGH();  // Scope channel 1: ISR start
+    // ... FOC algorithm ...
+    DEBUG_PIN_LOW();   // Scope channel 1: ISR end
+}
+
+// Measure with oscilloscope: pulse width = execution time
+```
+
+**2. Software execution timer:**
+
+```c
+// Use cycle counter (DWT)
+void Enable_Cycle_Counter(void) {
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+uint32_t cycles_start, cycles_end, cycles_elapsed;
+
+cycles_start = DWT->CYCCNT;
+// ... code to profile ...
+cycles_end = DWT->CYCCNT;
+cycles_elapsed = cycles_end - cycles_start;
+
+float time_us = cycles_elapsed / (F_CPU / 1000000.0f);
+```
+
+**3. Real-time telemetry:**
+
+```c
+// Stream variables to PC for plotting
+void Send_Telemetry(void) {
+    static uint32_t seq = 0;
+
+    // Binary protocol for efficiency
+    uint8_t buffer[32];
+    uint16_t idx = 0;
+
+    buffer[idx++] = 0xAA;  // Start byte
+    buffer[idx++] = 0x55;
+
+    memcpy(&buffer[idx], &seq, 4); idx += 4;
+    memcpy(&buffer[idx], &omega_measured, 4); idx += 4;
+    memcpy(&buffer[idx], &iq_ref, 4); idx += 4;
+    memcpy(&buffer[idx], &id_measured, 4); idx += 4;
+    memcpy(&buffer[idx], &iq_measured, 4); idx += 4;
+    memcpy(&buffer[idx], &vdc_measured, 4); idx += 4;
+
+    uint8_t checksum = Calculate_Checksum(buffer, idx);
+    buffer[idx++] = checksum;
+
+    UART_Transmit(buffer, idx);
+    seq++;
+}
+
+// Visualize on PC with Python/MATLAB script
+```
+
+### 7.7 Key Takeaways - System Architecture
+
+1. **Hardware matters:** Choose MCU with FPU, advanced timers, and fast ADC
+
+2. **Timing is critical:** FOC must execute deterministically within PWM period (~100 μs)
+
+3. **Multi-rate control:** Current loop fast (10 kHz), speed loop slower (1 kHz)
+
+4. **Interrupt priorities:** PWM+ADC gets highest priority for consistent timing
+
+5. **State machines ensure safety:** INIT → IDLE → ALIGNMENT → RUNNING → FAULT
+
+6. **Fault protection is mandatory:** Overcurrent, overvoltage, stall detection
+
+7. **Optimize for performance:** Use FPU, lookup tables, DMA, avoid divisions
+
+8. **Debug with oscilloscope:** GPIO toggles visualize execution timing
+
+9. **Log faults for diagnostics:** Capture system state when fault occurs
+
+10. **Test thoroughly:** Fault injection, stress testing, long-duration runs
+
+### 7.8 Further Study - System Architecture
+
+**Books:**
+
+1. **"Embedded Systems Architecture"** by Tammy Noergaard
+   - Real-time system design principles
+
+2. **"Making Embedded Systems"** by Elecia White
+   - Practical embedded development
+
+3. **"Mastering STM32"** by Carmine Noviello
+   - STM32-specific motor control implementation
+
+**Application Notes:**
+
+1. **ARM:** "Cortex-M4 Technical Reference Manual"
+2. **ST:** AN4776 "General-purpose timer cookbook"
+3. **TI:** SPRU712 "TMS320x28xx Optimizing C/C++ Compiler"
+
+**Tools:**
+
+1. **STM32CubeMX:** Code generation for STM32
+2. **SEGGER SystemView:** Real-time analysis and profiling
+3. **Ozone Debugger:** Advanced debugging with trace
+4. **PlatformIO:** Cross-platform embedded development
+
+---
+
+*End of Section 7 - Control System Architecture*
+
