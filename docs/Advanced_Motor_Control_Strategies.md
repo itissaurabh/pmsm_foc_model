@@ -3686,3 +3686,653 @@ void emergency_brake_assist(EmergencyBrakeAssist_t *eba) {
 
 ---
 
+## Section 4: Hill Hold Control
+
+Hill hold (also called hill start assist) prevents the vehicle from rolling backwards when stopped on an incline. This feature is essential for driver confidence and safety, especially in stop-and-go traffic on hills.
+
+---
+
+### 4.1 Hill Hold Theory and Requirements
+
+#### Physical Principles
+
+When a vehicle is stopped on a hill, gravity creates a rolling force that must be counteracted:
+
+```
+Rolling Force Analysis:
+
+F_roll = m * g * sin(θ)
+
+Where:
+  m = vehicle mass (kg)
+  g = gravitational acceleration (9.81 m/s²)
+  θ = road grade angle (radians)
+
+For typical grades:
+  5% grade (2.86°):   F_roll = 0.050 * m * g = 490 N for 1000 kg vehicle
+  10% grade (5.71°):  F_roll = 0.100 * m * g = 981 N for 1000 kg vehicle
+  20% grade (11.31°): F_roll = 0.196 * m * g = 1922 N for 1000 kg vehicle
+```
+
+**Torque Required at Wheels:**
+
+```
+T_hold = F_roll * r_wheel / η_drivetrain
+
+Where:
+  r_wheel = wheel radius (m)
+  η_drivetrain = drivetrain efficiency (0.90-0.95)
+
+Example (10% grade, 1000 kg, 0.3m wheel radius):
+  T_hold = 981 N * 0.3 m / 0.95 = 310 Nm at wheels
+  T_motor = T_hold / gear_ratio
+```
+
+#### Functional Requirements
+
+**1. Activation Conditions:**
+- Vehicle at complete stop (speed < 0.1 m/s)
+- Road grade exceeds threshold (typically > 3%)
+- Driver foot off accelerator and brake
+- System enabled by driver (may be user-selectable)
+
+**2. Hold Duration:**
+- Typical: 2-3 seconds after brake release
+- Maximum: 3-5 seconds (regulatory requirements)
+- Release conditions: accelerator pressed OR timeout
+
+**3. Roll-Back Prevention:**
+- Maximum allowed roll-back: < 10 cm
+- Roll-back velocity: < 0.2 m/s
+
+**4. Smooth Release:**
+- Seamless transition to drive torque
+- No jerk or abrupt release
+- Driver should not notice activation/deactivation
+
+#### Grade Detection
+
+```c
+typedef struct {
+    float accel_longitudinal;   // Longitudinal accelerometer (m/s²)
+    float accel_lateral;        // Lateral accelerometer (m/s²)
+    float accel_vertical;       // Vertical accelerometer (m/s²)
+    float vehicle_speed;        // Vehicle speed (m/s)
+    float grade_angle;          // Calculated grade angle (radians)
+    float grade_percent;        // Grade as percentage
+    bool grade_valid;           // Grade measurement valid
+} GradeDetection_t;
+
+void calculate_road_grade(GradeDetection_t *grade) {
+    // Vehicle must be stationary for accurate grade measurement
+    if (grade->vehicle_speed > 0.5f) {  // Moving
+        grade->grade_valid = false;
+        return;
+    }
+
+    // Calculate grade from accelerometer
+    // When stationary, longitudinal accel = g * sin(θ)
+    // and vertical accel = g * cos(θ)
+
+    float g_total = sqrtf(grade->accel_longitudinal * grade->accel_longitudinal +
+                         grade->accel_vertical * grade->accel_vertical);
+
+    // Calculate angle
+    grade->grade_angle = atan2f(grade->accel_longitudinal, grade->accel_vertical);
+
+    // Convert to percentage
+    grade->grade_percent = tanf(grade->grade_angle) * 100.0f;
+
+    // Validate measurement
+    if (fabsf(g_total - 9.81f) < 0.5f) {  // Within reasonable range
+        grade->grade_valid = true;
+    }
+    else {
+        grade->grade_valid = false;
+    }
+
+    // Apply low-pass filter to reduce noise
+    static float grade_filtered = 0.0f;
+    float alpha = 0.1f;  // Filter coefficient
+    grade_filtered = alpha * grade->grade_percent + (1.0f - alpha) * grade_filtered;
+    grade->grade_percent = grade_filtered;
+}
+```
+
+#### Direction Detection
+
+Hill hold must determine if the vehicle is facing uphill or downhill:
+
+```c
+typedef enum {
+    HILL_DIRECTION_NONE = 0,    // Flat or insignificant grade
+    HILL_DIRECTION_UPHILL,      // Vehicle facing uphill
+    HILL_DIRECTION_DOWNHILL     // Vehicle facing downhill
+} HillDirection_t;
+
+typedef struct {
+    float grade_angle;          // Road grade (radians, + = uphill)
+    HillDirection_t direction;
+    float grade_threshold;      // Minimum grade for activation (radians)
+} HillDirectionDetection_t;
+
+void detect_hill_direction(HillDirectionDetection_t *dir) {
+    if (fabsf(dir->grade_angle) < dir->grade_threshold) {
+        // Grade too small - no hill hold needed
+        dir->direction = HILL_DIRECTION_NONE;
+    }
+    else if (dir->grade_angle > 0.0f) {
+        // Positive grade - vehicle facing uphill
+        dir->direction = HILL_DIRECTION_UPHILL;
+    }
+    else {
+        // Negative grade - vehicle facing downhill
+        dir->direction = HILL_DIRECTION_DOWNHILL;
+    }
+}
+```
+
+---
+
+### References for Section 4.1:
+
+**Books:**
+1. *"Automotive Control Systems"* by Uwe Kiencke and Lars Nielsen - Chapter 10 (Driver Assistance Systems)
+2. *"Vehicle Dynamics: Theory and Application"* by Reza N. Jazar - Chapter 2 (Longitudinal Dynamics on Grades)
+
+**Standards:**
+1. **ECE R13**: "Uniform Provisions Concerning the Approval of Vehicles with Regard to Braking" (Annex 8: Hill Holder Performance)
+2. **ISO 2575**: "Road Vehicles - Symbols for Controls, Indicators and Tell-Tales" (Hill Hold Indicator)
+
+**Papers:**
+1. Sugai, M., et al. (2003). "Hill-Start Assist Control for AT Vehicles." JSAE Review, 24(2), 205-209.
+
+---
+
+### 4.2 Hill Hold Implementation Strategies
+
+This section presents three strategies for implementing hill hold control.
+
+#### Strategy 1: Friction Brake Hold (Hydraulic)
+
+The most common approach uses the vehicle's hydraulic brake system to maintain brake pressure after the driver releases the pedal.
+
+```c
+typedef struct {
+    bool active;                // Hill hold currently active
+    float brake_pressure_hold;  // Brake pressure to maintain (bar)
+    float grade_angle;          // Current grade (radians)
+    float hold_time_remaining;  // Time remaining (s)
+    float hold_duration_max;    // Maximum hold time (s)
+} HillHoldFrictionBrake_t;
+
+void hill_hold_friction_brake_update(HillHoldFrictionBrake_t *hh, float dt) {
+    // 1. Calculate required brake pressure
+    float vehicle_mass = get_vehicle_mass();
+    float force_required = vehicle_mass * 9.81f * sinf(hh->grade_angle);
+
+    // Convert force to brake pressure (simplified)
+    // Pressure = Force / (4 wheels * piston area * friction coefficient)
+    float brake_piston_area = 0.001f;  // m² per wheel
+    float friction_coeff = 0.4f;       // Brake pad friction
+    hh->brake_pressure_hold = force_required /
+                              (4.0f * brake_piston_area * friction_coeff * 1e5f);  // bar
+
+    // Clamp to reasonable range
+    hh->brake_pressure_hold = fmaxf(5.0f, fminf(100.0f, hh->brake_pressure_hold));
+
+    // 2. Activate hold if conditions met
+    if (!hh->active) {
+        // Check activation conditions
+        if (is_vehicle_stopped() &&
+            is_brake_pedal_released() &&
+            fabsf(hh->grade_angle) > 0.03f &&  // > ~3% grade
+            is_gear_engaged()) {
+
+            // Activate hill hold
+            hh->active = true;
+            hh->hold_time_remaining = hh->hold_duration_max;
+
+            // Command brake system to maintain pressure
+            set_brake_pressure(hh->brake_pressure_hold);
+
+            log_event("Hill hold activated on %.1f%% grade",
+                     tanf(hh->grade_angle) * 100.0f);
+        }
+    }
+
+    // 3. Update active hold
+    if (hh->active) {
+        // Decrement timer
+        hh->hold_time_remaining -= dt;
+
+        // Check release conditions
+        if (is_accelerator_pressed() ||
+            hh->hold_time_remaining <= 0.0f) {
+
+            // Release hill hold
+            hh->active = false;
+            release_brake_pressure();
+
+            log_event("Hill hold released");
+        }
+    }
+}
+```
+
+**Advantages:**
+- Uses existing hydraulic brake hardware
+- Reliable and fail-safe
+- Independent of drivetrain
+
+**Disadvantages:**
+- Requires electrohydraulic brake system
+- Cannot be used with simple mechanical brakes
+- Brake wear during hold
+
+---
+
+#### Strategy 2: Motor Torque Hold (Electric)
+
+Use the electric motor to generate holding torque. This is unique to EVs and provides additional capabilities.
+
+```c
+typedef struct {
+    bool active;                // Hill hold active
+    float motor_torque_hold;    // Motor torque to maintain (Nm)
+    float grade_angle;          // Current grade (radians)
+    float hold_time_remaining;  // Time remaining (s)
+    bool motor_available;       // Motor can provide hold torque
+} HillHoldMotorTorque_t;
+
+void hill_hold_motor_torque_update(HillHoldMotorTorque_t *hh, float dt) {
+    // 1. Calculate required motor torque
+    float vehicle_mass = get_vehicle_mass();
+    float wheel_radius = get_wheel_radius();
+    float gear_ratio = get_gear_ratio();
+    float force_required = vehicle_mass * 9.81f * sinf(hh->grade_angle);
+
+    // Torque at motor shaft
+    hh->motor_torque_hold = (force_required * wheel_radius) / gear_ratio;
+
+    // 2. Check if motor can provide this torque at zero speed
+    // Many motors have reduced torque at zero speed due to cooling
+    float motor_torque_max_static = get_motor_max_torque_static();
+
+    if (fabsf(hh->motor_torque_hold) > motor_torque_max_static) {
+        hh->motor_available = false;
+        return;  // Cannot use motor hold
+    }
+    else {
+        hh->motor_available = true;
+    }
+
+    // 3. Activation
+    if (!hh->active) {
+        if (is_vehicle_stopped() &&
+            is_brake_pedal_released() &&
+            fabsf(hh->grade_angle) > 0.03f &&
+            hh->motor_available) {
+
+            // Activate motor hold
+            hh->active = true;
+            hh->hold_time_remaining = 3.0f;  // seconds
+
+            // Command motor torque
+            // Positive torque for uphill, negative for downhill
+            set_motor_torque_command(hh->motor_torque_hold);
+
+            log_event("Motor hill hold activated");
+        }
+    }
+
+    // 4. Update
+    if (hh->active) {
+        hh->hold_time_remaining -= dt;
+
+        // Update torque based on vehicle movement
+        float vehicle_speed = get_vehicle_speed();
+        if (fabsf(vehicle_speed) > 0.1f) {
+            // Vehicle moving - increase torque if rolling back
+            if ((hh->grade_angle > 0.0f && vehicle_speed < 0.0f) ||
+                (hh->grade_angle < 0.0f && vehicle_speed > 0.0f)) {
+                // Rolling backwards - increase torque
+                hh->motor_torque_hold *= 1.1f;
+            }
+        }
+
+        // Release conditions
+        if (is_accelerator_pressed() || hh->hold_time_remaining <= 0.0f) {
+            hh->active = false;
+            log_event("Motor hill hold released");
+        }
+    }
+}
+```
+
+**Advantages:**
+- No brake wear
+- Can provide smooth transition to drive torque
+- No additional hardware needed
+
+**Disadvantages:**
+- Motor thermal limits at zero speed
+- May not handle steep grades
+- Safety concern if motor fails
+
+---
+
+#### Strategy 3: Hybrid Hold (Motor + Friction)
+
+Combine motor and friction brakes for optimal performance.
+
+```c
+typedef struct {
+    bool active;
+    float motor_torque;         // Motor contribution (Nm)
+    float brake_pressure;       // Brake contribution (bar)
+    float grade_angle;          // Grade (radians)
+    float hold_time;            // Time in hold (s)
+    float motor_thermal_limit;  // Motor thermal limit (0-1)
+} HillHoldHybrid_t;
+
+void hill_hold_hybrid_update(HillHoldHybrid_t *hh, float dt) {
+    if (!hh->active) {
+        // Activation logic (same as before)
+        if (is_vehicle_stopped() && is_brake_pedal_released() &&
+            fabsf(hh->grade_angle) > 0.03f) {
+
+            hh->active = true;
+            hh->hold_time = 0.0f;
+        }
+    }
+
+    if (hh->active) {
+        hh->hold_time += dt;
+
+        // Calculate total required force
+        float vehicle_mass = get_vehicle_mass();
+        float force_total = vehicle_mass * 9.81f * fabsf(sinf(hh->grade_angle));
+
+        // Determine motor contribution based on thermal state
+        float motor_torque_available = get_motor_max_torque_static() *
+                                       hh->motor_thermal_limit;
+
+        float force_motor_max = (motor_torque_available * get_gear_ratio()) /
+                                get_wheel_radius();
+
+        // Strategy: Use motor first, supplement with friction
+        if (force_motor_max >= force_total) {
+            // Motor can handle entire hold
+            hh->motor_torque = (force_total * get_wheel_radius()) /
+                               get_gear_ratio();
+            hh->brake_pressure = 0.0f;
+        }
+        else {
+            // Use max motor, supplement with brakes
+            hh->motor_torque = motor_torque_available;
+            float force_remaining = force_total - force_motor_max;
+            hh->brake_pressure = calculate_brake_pressure(force_remaining);
+        }
+
+        // After 2 seconds, transition fully to friction brakes
+        // This prevents motor overheating
+        if (hh->hold_time > 2.0f) {
+            float transition_factor = fminf(1.0f, (hh->hold_time - 2.0f) / 1.0f);
+            hh->motor_torque *= (1.0f - transition_factor);
+            hh->brake_pressure = calculate_brake_pressure(force_total);
+        }
+
+        // Apply commands
+        set_motor_torque_command(hh->motor_torque);
+        set_brake_pressure(hh->brake_pressure);
+
+        // Release conditions
+        if (is_accelerator_pressed() || hh->hold_time > 5.0f) {
+            hh->active = false;
+            release_brake_pressure();
+            set_motor_torque_command(0.0f);
+            log_event("Hybrid hill hold released");
+        }
+    }
+}
+```
+
+**Smooth Transition to Drive Torque:**
+
+Critical for good user experience:
+
+```c
+typedef struct {
+    float torque_hold;          // Holding torque (Nm)
+    float torque_drive;         // Desired drive torque (Nm)
+    float torque_command;       // Actual commanded torque (Nm)
+    float blend_time;           // Blend duration (s)
+    float blend_progress;       // Blend progress (0-1)
+    bool blending;              // Currently blending
+} HillHoldTransition_t;
+
+void hill_hold_transition_to_drive(HillHoldTransition_t *trans, float dt) {
+    if (!trans->blending) {
+        // Start blend when accelerator pressed
+        if (is_accelerator_pressed()) {
+            trans->blending = true;
+            trans->blend_progress = 0.0f;
+            trans->blend_time = 0.5f;  // 0.5 second blend
+
+            // Get drive torque request from accelerator
+            trans->torque_drive = get_accelerator_torque_request();
+        }
+    }
+
+    if (trans->blending) {
+        // Update blend progress
+        trans->blend_progress += dt / trans->blend_time;
+
+        if (trans->blend_progress >= 1.0f) {
+            // Blend complete
+            trans->blending = false;
+            trans->torque_command = trans->torque_drive;
+        }
+        else {
+            // Smooth S-curve blend for natural feel
+            float t = trans->blend_progress;
+            float s_curve = t * t * (3.0f - 2.0f * t);  // Smoothstep
+
+            // Blend from hold torque to drive torque
+            trans->torque_command = trans->torque_hold * (1.0f - s_curve) +
+                                   trans->torque_drive * s_curve;
+
+            // Ensure minimum torque to prevent rollback
+            float torque_min = trans->torque_hold * 0.9f;
+            trans->torque_command = fmaxf(trans->torque_command, torque_min);
+        }
+
+        // Apply command
+        set_motor_torque_command(trans->torque_command);
+    }
+}
+```
+
+---
+
+### References for Section 4.2:
+
+**Papers:**
+1. Kim, S., et al. (2012). "Development of Hill-Start Assist Control System for Electric Vehicles." International Journal of Automotive Technology, 13(4), 627-635.
+2. Huang, M., & Liu, X. (2014). "Hill Start Assistance Control for Electric Vehicles with Automatic Transmission." SAE Technical Paper 2014-01-1798.
+
+**Application Notes:**
+1. **Bosch**: "Hill Hold Control for Electric and Hybrid Vehicles" (2018 Technical Paper)
+2. **Continental**: "Electronic Parking Brake with Hill Hold Function" (Application Guide)
+
+---
+
+### 4.3 Integration with Braking and Traction Systems
+
+#### Integration with Regenerative Braking
+
+Hill hold must be coordinated with regenerative braking to avoid conflicts.
+
+```c
+typedef struct {
+    bool hill_hold_active;
+    bool regen_available;
+    float grade_angle;
+    float motor_torque_hold;
+    float motor_torque_regen;
+    float motor_torque_command;
+} HillHoldRegenIntegration_t;
+
+void integrate_hill_hold_with_regen(HillHoldRegenIntegration_t *integ) {
+    // Regen may interfere with hill hold, especially on uphill
+    if (integ->hill_hold_active) {
+        if (integ->grade_angle > 0.0f) {
+            // Uphill - need positive motor torque to hold
+            // Regen would produce negative torque - disable it
+            disable_regenerative_braking();
+
+            integ->motor_torque_command = integ->motor_torque_hold;
+        }
+        else {
+            // Downhill - need negative motor torque to hold
+            // Regen naturally produces negative torque - can use it
+            // But ensure it's sufficient
+            float torque_regen_max = get_max_regen_torque();
+
+            if (fabsf(torque_regen_max) >= fabsf(integ->motor_torque_hold)) {
+                // Regen can handle hold
+                integ->motor_torque_command = integ->motor_torque_hold;
+                enable_regenerative_braking();
+            }
+            else {
+                // Regen insufficient - add friction brakes
+                integ->motor_torque_command = -torque_regen_max;
+                float force_remaining = calculate_remaining_hold_force(
+                    integ->motor_torque_hold,
+                    integ->motor_torque_command
+                );
+                set_brake_pressure(calculate_brake_pressure(force_remaining));
+            }
+        }
+    }
+}
+```
+
+#### Integration with Traction Control
+
+```c
+typedef struct {
+    bool hill_hold_active;
+    bool traction_control_active;
+    float wheel_slip[4];
+    float motor_torque_hold;
+    float motor_torque_drive;
+} HillHoldTractionIntegration_t;
+
+void integrate_hill_hold_with_traction_control(HillHoldTractionIntegration_t *integ) {
+    // During hill start, wheel slip may occur
+    if (integ->hill_hold_active) {
+        // Monitor wheel slip
+        float max_wheel_slip = 0.0f;
+        for (int i = 0; i < 4; i++) {
+            if (integ->wheel_slip[i] > max_wheel_slip) {
+                max_wheel_slip = integ->wheel_slip[i];
+            }
+        }
+
+        // If excessive slip during hill start, reduce torque
+        if (max_wheel_slip > 0.10f) {  // >10% slip
+            integ->traction_control_active = true;
+
+            // Reduce drive torque
+            float slip_factor = 1.0f - (max_wheel_slip / 0.20f);
+            slip_factor = fmaxf(0.5f, fminf(1.0f, slip_factor));
+
+            integ->motor_torque_drive *= slip_factor;
+
+            // Ensure we maintain minimum hold torque
+            if (integ->motor_torque_drive < integ->motor_torque_hold) {
+                integ->motor_torque_drive = integ->motor_torque_hold;
+            }
+
+            log_event("Traction control active during hill start");
+        }
+        else {
+            integ->traction_control_active = false;
+        }
+    }
+}
+```
+
+#### User Interface and Feedback
+
+```c
+typedef struct {
+    bool hill_hold_available;
+    bool hill_hold_active;
+    bool user_enabled;          // User preference setting
+    float grade_percent;
+    float time_remaining;
+} HillHoldUserInterface_t;
+
+void update_hill_hold_user_interface(HillHoldUserInterface_t *ui) {
+    // 1. Display hill hold status on instrument cluster
+    if (ui->hill_hold_active) {
+        display_hill_hold_icon(true);
+        display_message("Hill Hold Active");
+
+        // Show countdown timer in last 2 seconds
+        if (ui->time_remaining < 2.0f) {
+            display_countdown(ui->time_remaining);
+        }
+    }
+    else {
+        display_hill_hold_icon(false);
+    }
+
+    // 2. Provide haptic feedback
+    if (ui->hill_hold_active) {
+        // Gentle pulse when first activated
+        provide_haptic_pulse(HAPTIC_GENTLE);
+    }
+
+    // 3. User settings menu
+    if (user_in_settings_menu()) {
+        display_setting("Hill Hold Assist", ui->user_enabled ? "ON" : "OFF");
+
+        if (user_toggled_setting()) {
+            ui->user_enabled = !ui->user_enabled;
+            save_user_preference("hill_hold_enabled", ui->user_enabled);
+        }
+    }
+
+    // 4. Grade display (optional, for driver information)
+    if (ui->grade_percent > 3.0f) {
+        display_grade_indicator(ui->grade_percent);
+    }
+}
+```
+
+---
+
+### References for Section 4.3:
+
+**Books:**
+1. *"Electric and Hybrid Vehicles: Design Fundamentals"* by Iqbal Husain - Chapter 11 (Integration of Subsystems)
+
+**Standards:**
+1. **SAE J2807**: "Performance Requirements for Determining Tow-Vehicle Gross Combination Weight Rating and Trailer Weight Rating" (includes hill start requirements)
+
+**Papers:**
+1. Park, J., et al. (2018). "Integrated Control of the Differential Braking, the Suspension System, and the Active Roll Bar for Improvement of the Roll Stability." IMechE Part D: Journal of Automobile Engineering, 232(13), 1762-1779.
+
+**Application Notes:**
+1. **ZF**: "Hill Holder Control Systems" (Technical Documentation)
+
+---
+
+**End of Section 4: Hill Hold Control**
+
+---
+
