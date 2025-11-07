@@ -4336,3 +4336,1030 @@ void update_hill_hold_user_interface(HillHoldUserInterface_t *ui) {
 
 ---
 
+## Section 5: Temperature-Based Derating
+
+Temperature management is critical for protecting both the motor and controller from thermal damage while maintaining maximum performance. This section covers thermal modeling and derating strategies.
+
+---
+
+### 5.1 Thermal Modeling and Monitoring
+
+#### Temperature Sources and Sensors
+
+**Key Temperature Measurement Points:**
+
+1. **Motor Temperatures:**
+   - Stator winding temperature (most critical)
+   - Rotor temperature (magnets)
+   - Bearing temperature
+   - Housing/case temperature
+
+2. **Inverter Temperatures:**
+   - MOSFET/IGBT junction temperature
+   - Gate driver temperature
+   - DC bus capacitor temperature
+   - Heatsink temperature
+
+3. **Battery Temperatures:**
+   - Cell temperatures (min, max, average)
+   - BMS board temperature
+   - Coolant temperature (if liquid cooled)
+
+**Sensor Types:**
+
+```c
+typedef enum {
+    TEMP_SENSOR_NTC,            // Negative Temperature Coefficient thermistor
+    TEMP_SENSOR_PTC,            // Positive Temperature Coefficient
+    TEMP_SENSOR_THERMOCOUPLE,   // K-type, J-type, etc.
+    TEMP_SENSOR_RTD,            // Resistance Temperature Detector (PT100, PT1000)
+    TEMP_SENSOR_SEMICONDUCTOR   // Integrated IC sensor
+} TempSensorType_t;
+
+typedef struct {
+    TempSensorType_t type;
+    float resistance;           // Current resistance (Ω)
+    float voltage;              // Measured voltage (V)
+    float temperature;          // Calculated temperature (°C)
+    bool valid;                 // Reading valid
+    float calibration_offset;   // Calibration offset (°C)
+} TemperatureSensor_t;
+```
+
+#### NTC Thermistor Temperature Calculation
+
+Most common sensor for motor and inverter monitoring:
+
+```c
+// Steinhart-Hart equation for NTC thermistor
+float calculate_temperature_ntc(TemperatureSensor_t *sensor,
+                                 float R_ref,
+                                 float T_ref,
+                                 float Beta) {
+    // R_ref = reference resistance at T_ref (typically 10kΩ at 25°C)
+    // Beta = Beta coefficient (typically 3950 for automotive NTCs)
+
+    float R = sensor->resistance;
+
+    // Steinhart-Hart equation (simplified Beta formula)
+    float T_kelvin = 1.0f / ((1.0f / (T_ref + 273.15f)) +
+                             (1.0f / Beta) * logf(R / R_ref));
+
+    sensor->temperature = T_kelvin - 273.15f + sensor->calibration_offset;
+
+    // Validate range
+    if (sensor->temperature >= -40.0f && sensor->temperature <= 200.0f) {
+        sensor->valid = true;
+    }
+    else {
+        sensor->valid = false;
+    }
+
+    return sensor->temperature;
+}
+```
+
+#### Junction Temperature Estimation
+
+MOSFET junction temperature is not directly measurable but can be estimated:
+
+```c
+typedef struct {
+    float T_heatsink;           // Heatsink temperature (°C)
+    float P_dissipation;        // Power dissipation (W)
+    float R_junction_case;      // Thermal resistance junction-to-case (°C/W)
+    float R_case_heatsink;      // Thermal resistance case-to-heatsink (°C/W)
+    float T_junction_estimated; // Estimated junction temp (°C)
+} JunctionTempEstimation_t;
+
+void estimate_junction_temperature(JunctionTempEstimation_t *junc) {
+    // Thermal model: T_j = T_hs + P * (R_jc + R_ch)
+    float R_total = junc->R_junction_case + junc->R_case_heatsink;
+    junc->T_junction_estimated = junc->T_heatsink + junc->P_dissipation * R_total;
+}
+```
+
+#### Thermal Time Constants
+
+Different components have different thermal time constants:
+
+```
+Component          Time Constant    Implication
+---------------------------------------------------------
+MOSFET Junction    1-10 ms          Fast response to load changes
+Motor Winding      10-60 s          Moderate response
+Motor Housing      5-15 min         Slow thermal mass
+Battery Cell       2-10 min         Moderate to slow
+DC Capacitor       30-120 s         Moderate response
+```
+
+**Thermal Model with Time Constants:**
+
+```c
+typedef struct {
+    float T_current;            // Current temperature (°C)
+    float T_ambient;            // Ambient temperature (°C)
+    float P_dissipation;        // Power dissipation (W)
+    float thermal_resistance;   // Thermal resistance (°C/W)
+    float thermal_capacitance;  // Thermal capacitance (J/°C)
+    float time_constant;        // Thermal time constant (s)
+} ThermalModel_t;
+
+void update_thermal_model(ThermalModel_t *model, float dt) {
+    // Calculate steady-state temperature rise
+    float delta_T_ss = model->P_dissipation * model->thermal_resistance;
+    float T_final = model->T_ambient + delta_T_ss;
+
+    // First-order thermal model
+    // dT/dt = (T_final - T_current) / tau
+    float tau = model->time_constant;
+    float alpha = dt / (tau + dt);  // Discrete-time coefficient
+
+    model->T_current = model->T_current + alpha * (T_final - model->T_current);
+}
+```
+
+---
+
+### References for Section 5.1:
+
+**Books:**
+1. *"Thermal Design of Electronic Equipment"* by Ralph Remsburg - Chapter 3 (Thermal Resistance)
+2. *"Thermal Management of Electric Vehicle Battery Systems"* by Ibrahim Dincer et al. - Chapter 4 (Thermal Modeling)
+
+**Application Notes:**
+1. **Infineon**: "Thermal Equivalent Circuit Models" (AN2008-03)
+2. **Texas Instruments**: "Temperature Sensing with NTC Thermistors" (SLVA473)
+
+---
+
+### 5.2 Motor Temperature Derating
+
+#### Motor Thermal Limits
+
+Motor insulation classes define maximum allowable winding temperatures:
+
+```
+Insulation Class    Max Temperature    Typical Application
+---------------------------------------------------------------
+Class B             130°C              Industrial motors
+Class F             155°C              Automotive motors (common)
+Class H             180°C              High-performance EV motors
+Class N (200)       200°C              Racing/performance applications
+```
+
+**Thermal Margin Strategy:**
+
+```c
+typedef struct {
+    float T_winding;            // Measured winding temperature (°C)
+    float T_limit_continuous;   // Continuous operating limit (°C)
+    float T_limit_peak;         // Peak operating limit (°C)
+    float T_warning;            // Warning threshold (°C)
+    float T_derate_start;       // Start derating (°C)
+    float torque_derate_factor; // Output: torque derate (0-1)
+} MotorThermalDerate_t;
+
+void calculate_motor_thermal_derate(MotorThermalDerate_t *derate) {
+    // Example limits for Class F motor:
+    derate->T_limit_continuous = 155.0f;
+    derate->T_limit_peak = 180.0f;        // Short duration only
+    derate->T_warning = 140.0f;
+    derate->T_derate_start = 130.0f;
+
+    if (derate->T_winding < derate->T_derate_start) {
+        // Below derating threshold - full torque
+        derate->torque_derate_factor = 1.0f;
+    }
+    else if (derate->T_winding < derate->T_limit_continuous) {
+        // Linear derate between start and continuous limit
+        float temp_range = derate->T_limit_continuous - derate->T_derate_start;
+        float temp_excess = derate->T_winding - derate->T_derate_start;
+        derate->torque_derate_factor = 1.0f - (temp_excess / temp_range) * 0.5f;
+    }
+    else if (derate->T_winding < derate->T_limit_peak) {
+        // Heavy derate between continuous and peak
+        float temp_range = derate->T_limit_peak - derate->T_limit_continuous;
+        float temp_excess = derate->T_winding - derate->T_limit_continuous;
+        derate->torque_derate_factor = 0.5f - (temp_excess / temp_range) * 0.4f;
+    }
+    else {
+        // At or above peak limit - minimum torque only
+        derate->torque_derate_factor = 0.1f;
+    }
+
+    // Clamp to valid range
+    derate->torque_derate_factor = fmaxf(0.0f, fminf(1.0f,
+                                         derate->torque_derate_factor));
+}
+```
+
+#### Magnet Demagnetization Protection
+
+Permanent magnets can be permanently damaged by high temperatures:
+
+```c
+typedef struct {
+    float T_rotor_estimated;    // Estimated rotor temperature (°C)
+    float T_magnet_limit;       // Magnet demagnetization temp (°C)
+    float speed_limit_factor;   // Speed limit multiplier (0-1)
+    bool protection_active;
+} MagnetProtection_t;
+
+void protect_magnet_from_demagnetization(MagnetProtection_t *prot) {
+    // NdFeB magnets: demagnetization risk above 150-180°C
+    // Ferrite magnets: lower limit (~100-120°C)
+
+    prot->T_magnet_limit = 150.0f;  // Conservative for NdFeB
+
+    if (prot->T_rotor_estimated > prot->T_magnet_limit - 20.0f) {
+        // Approaching limit - reduce speed to reduce rotor heating
+        prot->protection_active = true;
+
+        float temp_margin = prot->T_magnet_limit - prot->T_rotor_estimated;
+        prot->speed_limit_factor = temp_margin / 20.0f;
+        prot->speed_limit_factor = fmaxf(0.3f, fminf(1.0f,
+                                         prot->speed_limit_factor));
+    }
+    else {
+        prot->protection_active = false;
+        prot->speed_limit_factor = 1.0f;
+    }
+}
+```
+
+#### Continuous vs Peak Power Curves
+
+Motors have different torque capability based on duration:
+
+```c
+typedef struct {
+    float torque_continuous;    // Continuous torque rating (Nm)
+    float torque_peak_30s;      // 30-second peak torque (Nm)
+    float torque_peak_10s;      // 10-second peak torque (Nm)
+    float torque_peak_3s;       // 3-second peak torque (Nm)
+    float time_at_peak;         // Time in peak region (s)
+    float cooldown_time;        // Required cooldown time (s)
+    float torque_available;     // Output: available torque (Nm)
+} MotorTorqueDuration_t;
+
+void calculate_duration_limited_torque(MotorTorqueDuration_t *dur, float dt) {
+    // Update time counter
+    float torque_requested = get_torque_request();
+
+    if (fabsf(torque_requested) > dur->torque_continuous) {
+        // Operating in peak region
+        dur->time_at_peak += dt;
+    }
+    else {
+        // Operating in continuous region - cooldown
+        dur->time_at_peak -= dt * 0.5f;  // Cooldown at 50% rate
+        dur->time_at_peak = fmaxf(0.0f, dur->time_at_peak);
+    }
+
+    // Determine available torque based on time at peak
+    if (dur->time_at_peak < 3.0f) {
+        // 0-3 seconds: peak torque available
+        dur->torque_available = dur->torque_peak_3s;
+    }
+    else if (dur->time_at_peak < 10.0f) {
+        // 3-10 seconds: interpolate
+        float t = (dur->time_at_peak - 3.0f) / 7.0f;
+        dur->torque_available = dur->torque_peak_3s * (1.0f - t) +
+                                dur->torque_peak_10s * t;
+    }
+    else if (dur->time_at_peak < 30.0f) {
+        // 10-30 seconds: interpolate
+        float t = (dur->time_at_peak - 10.0f) / 20.0f;
+        dur->torque_available = dur->torque_peak_10s * (1.0f - t) +
+                                dur->torque_peak_30s * t;
+    }
+    else {
+        // > 30 seconds: continuous only
+        dur->torque_available = dur->torque_continuous;
+    }
+}
+```
+
+---
+
+### References for Section 5.2:
+
+**Books:**
+1. *"Electric Motor Handbook"* by H. Wayne Beaty and James L. Kirtley - Chapter 15 (Motor Thermal Protection)
+
+**Standards:**
+1. **IEC 60034-1**: "Rotating Electrical Machines - Part 1: Rating and Performance" (insulation classes)
+2. **NEMA MG 1**: "Motors and Generators" (thermal protection)
+
+**Papers:**
+1. Staton, D., et al. (2005). "Thermal Analysis of Electric Motors and Generators." IEEE Industry Applications Magazine, 11(4), 19-25.
+
+---
+
+### 5.3 Inverter Temperature Derating
+
+#### Power Semiconductor Thermal Limits
+
+**Typical Junction Temperature Limits:**
+- Silicon MOSFETs/IGBTs: 150-175°C
+- SiC MOSFETs: 175-200°C
+- GaN FETs: 150-175°C
+
+```c
+typedef struct {
+    float T_junction;           // Junction temperature (°C)
+    float T_junction_max;       // Maximum junction temp (°C)
+    float T_derate_start;       // Start derating (°C)
+    float current_derate_factor; // Output: current limit (0-1)
+    float switching_freq_factor; // Output: switching freq limit (0-1)
+} InverterThermalDerate_t;
+
+void calculate_inverter_thermal_derate(InverterThermalDerate_t *derate) {
+    derate->T_junction_max = 150.0f;     // Silicon MOSFET limit
+    derate->T_derate_start = 120.0f;     // Start derating at 120°C
+
+    if (derate->T_junction < derate->T_derate_start) {
+        // Full capability
+        derate->current_derate_factor = 1.0f;
+        derate->switching_freq_factor = 1.0f;
+    }
+    else if (derate->T_junction < derate->T_junction_max) {
+        // Linear derate
+        float temp_range = derate->T_junction_max - derate->T_derate_start;
+        float temp_excess = derate->T_junction - derate->T_derate_start;
+        float derate_ratio = temp_excess / temp_range;
+
+        // Reduce current capability
+        derate->current_derate_factor = 1.0f - derate_ratio * 0.6f;  // Down to 40%
+
+        // Reduce switching frequency to reduce switching losses
+        derate->switching_freq_factor = 1.0f - derate_ratio * 0.5f;  // Down to 50%
+    }
+    else {
+        // At limit - minimum operation
+        derate->current_derate_factor = 0.3f;
+        derate->switching_freq_factor = 0.5f;
+    }
+}
+```
+
+#### DC Bus Capacitor Temperature Management
+
+Electrolytic capacitors are temperature-sensitive:
+
+```c
+typedef struct {
+    float T_capacitor;          // Capacitor temperature (°C)
+    float T_rated;              // Rated temperature (typically 85°C or 105°C)
+    float ripple_current_derate; // Output: ripple current limit (0-1)
+    float lifetime_factor;      // Lifetime multiplier at current temp
+} CapacitorThermalManagement_t;
+
+void manage_capacitor_temperature(CapacitorThermalManagement_t *cap) {
+    cap->T_rated = 105.0f;  // High-temp automotive cap
+
+    if (cap->T_capacitor < cap->T_rated - 20.0f) {
+        // Well below rating - full capability
+        cap->ripple_current_derate = 1.0f;
+        cap->lifetime_factor = 4.0f;  // Double life for every 10°C below rating
+    }
+    else if (cap->T_capacitor < cap->T_rated) {
+        // Approaching rating - some derate
+        float temp_excess = cap->T_capacitor - (cap->T_rated - 20.0f);
+        cap->ripple_current_derate = 1.0f - (temp_excess / 20.0f) * 0.3f;
+
+        // Lifetime calculation (Arrhenius equation approximation)
+        // Life halves for every 10°C increase
+        float delta_T = cap->T_capacitor - (cap->T_rated - 20.0f);
+        cap->lifetime_factor = powf(2.0f, -delta_T / 10.0f);
+    }
+    else {
+        // Above rating - significant derate
+        float temp_excess = cap->T_capacitor - cap->T_rated;
+        cap->ripple_current_derate = 0.7f - (temp_excess / 20.0f) * 0.5f;
+        cap->ripple_current_derate = fmaxf(0.2f, cap->ripple_current_derate);
+
+        cap->lifetime_factor = powf(2.0f, -20.0f / 10.0f);  // Much reduced life
+    }
+}
+```
+
+---
+
+### References for Section 5.3:
+
+**Application Notes:**
+1. **Infineon**: "Thermal Management of Power Semiconductors" (AN2015-10)
+2. **ON Semiconductor**: "MOSFET & IGBT Gate Drive Design Guide" (AND9093/D)
+3. **Nichicon**: "Aluminum Electrolytic Capacitors: Life Expectancy" (CAT.8101E)
+
+---
+
+### 5.4 Integrated Thermal Management System
+
+#### Master Thermal Controller
+
+Coordinates all thermal management functions:
+
+```c
+typedef struct {
+    // Temperature inputs
+    float T_motor_winding;
+    float T_motor_housing;
+    float T_inverter_junction;
+    float T_inverter_heatsink;
+    float T_battery_max;
+    float T_battery_min;
+    float T_dc_capacitor;
+    float T_ambient;
+
+    // Thermal models
+    MotorThermalDerate_t motor_derate;
+    InverterThermalDerate_t inverter_derate;
+    CapacitorThermalManagement_t capacitor_mgmt;
+
+    // System limits
+    float torque_limit_thermal;      // Torque limit from thermal (Nm)
+    float current_limit_thermal;     // Current limit from thermal (A)
+    float power_limit_thermal;       // Power limit from thermal (W)
+    float speed_limit_thermal;       // Speed limit from thermal (rad/s)
+
+    // Cooling control
+    float fan_duty_cycle;            // Cooling fan PWM (0-1)
+    float pump_duty_cycle;           // Coolant pump PWM (0-1)
+
+    // Status
+    bool thermal_warning;
+    bool thermal_fault;
+    bool cooling_active;
+} MasterThermalController_t;
+
+void update_master_thermal_controller(MasterThermalController_t *thermal) {
+    // 1. Update individual thermal models
+    thermal->motor_derate.T_winding = thermal->T_motor_winding;
+    calculate_motor_thermal_derate(&thermal->motor_derate);
+
+    thermal->inverter_derate.T_junction = thermal->T_inverter_junction;
+    calculate_inverter_thermal_derate(&thermal->inverter_derate);
+
+    thermal->capacitor_mgmt.T_capacitor = thermal->T_dc_capacitor;
+    manage_capacitor_temperature(&thermal->capacitor_mgmt);
+
+    // 2. Calculate combined limits (use most restrictive)
+    thermal->torque_limit_thermal = get_base_torque_rating() *
+                                    thermal->motor_derate.torque_derate_factor;
+
+    thermal->current_limit_thermal = get_base_current_rating() *
+                                     thermal->inverter_derate.current_derate_factor;
+
+    thermal->power_limit_thermal = thermal->torque_limit_thermal *
+                                   get_motor_speed();
+
+    // 3. Cooling control
+    update_cooling_system(thermal);
+
+    // 4. Status and warnings
+    if (thermal->T_motor_winding > 140.0f ||
+        thermal->T_inverter_junction > 135.0f ||
+        thermal->T_battery_max > 50.0f) {
+        thermal->thermal_warning = true;
+    }
+    else {
+        thermal->thermal_warning = false;
+    }
+
+    if (thermal->T_motor_winding > 160.0f ||
+        thermal->T_inverter_junction > 155.0f ||
+        thermal->T_battery_max > 60.0f) {
+        thermal->thermal_fault = true;
+        // Trigger system shutdown
+        trigger_thermal_shutdown();
+    }
+}
+
+void update_cooling_system(MasterThermalController_t *thermal) {
+    // Calculate cooling demand from each subsystem
+    float cooling_demand_motor = 0.0f;
+    float cooling_demand_inverter = 0.0f;
+    float cooling_demand_battery = 0.0f;
+
+    // Motor cooling demand
+    if (thermal->T_motor_winding > 100.0f) {
+        cooling_demand_motor = (thermal->T_motor_winding - 100.0f) / 40.0f;
+    }
+
+    // Inverter cooling demand
+    if (thermal->T_inverter_junction > 100.0f) {
+        cooling_demand_inverter = (thermal->T_inverter_junction - 100.0f) / 40.0f;
+    }
+
+    // Battery cooling demand
+    if (thermal->T_battery_max > 35.0f) {
+        cooling_demand_battery = (thermal->T_battery_max - 35.0f) / 20.0f;
+    }
+
+    // Combined cooling demand
+    float cooling_demand = fmaxf(cooling_demand_motor,
+                           fmaxf(cooling_demand_inverter, cooling_demand_battery));
+    cooling_demand = fmaxf(0.0f, fminf(1.0f, cooling_demand));
+
+    // Control fan
+    if (cooling_demand > 0.1f) {
+        thermal->cooling_active = true;
+        thermal->fan_duty_cycle = 0.3f + cooling_demand * 0.7f;  // 30-100%
+    }
+    else {
+        thermal->cooling_active = false;
+        thermal->fan_duty_cycle = 0.0f;
+    }
+
+    // Control pump (if liquid cooled)
+    if (cooling_demand > 0.2f) {
+        thermal->pump_duty_cycle = 0.5f + cooling_demand * 0.5f;  // 50-100%
+    }
+    else {
+        thermal->pump_duty_cycle = 0.0f;
+    }
+
+    // Apply PWM to cooling hardware
+    set_fan_pwm(thermal->fan_duty_cycle);
+    set_pump_pwm(thermal->pump_duty_cycle);
+}
+```
+
+#### Predictive Thermal Management
+
+Anticipate thermal issues before they occur:
+
+```c
+typedef struct {
+    float T_current;
+    float T_predicted_60s;      // Temperature in 60 seconds
+    float power_current;
+    ThermalModel_t thermal_model;
+    bool preemptive_derate;
+} PredictiveThermalMgmt_t;
+
+void predict_thermal_behavior(PredictiveThermalMgmt_t *pred, float dt) {
+    // Update thermal model with current power
+    pred->thermal_model.P_dissipation = pred->power_current;
+    pred->thermal_model.T_current = pred->T_current;
+
+    // Simulate forward 60 seconds
+    ThermalModel_t model_copy = pred->thermal_model;
+    for (int i = 0; i < 60; i++) {
+        update_thermal_model(&model_copy, 1.0f);  // 1 second steps
+    }
+    pred->T_predicted_60s = model_copy.T_current;
+
+    // If predicted temp will exceed limits, start derating now
+    if (pred->T_predicted_60s > 130.0f) {
+        pred->preemptive_derate = true;
+        // Reduce power before we hit the limit
+        float derate_factor = 1.0f - ((pred->T_predicted_60s - 130.0f) / 20.0f);
+        apply_preemptive_power_limit(derate_factor);
+    }
+    else {
+        pred->preemptive_derate = false;
+    }
+}
+```
+
+---
+
+### References for Section 5.4:
+
+**Books:**
+1. *"Electric Vehicle Technology Explained"* by James Larminie and John Lowry - Chapter 5 (Electric Motors and Controllers)
+2. *"Thermal Management of Electric Vehicle Battery Systems"* by Ibrahim Dincer - Chapter 7 (Integrated Thermal Systems)
+
+**Papers:**
+1. Finesso, R., et al. (2016). "Thermal Management System for Hybrid Electric Vehicles Including a Rotating Thermal Storage Device." Applied Thermal Engineering, 98, 190-201.
+2. Kim, D., et al. (2019). "Integrated Thermal Management for Electric Vehicle Powertrains." IEEE Transactions on Vehicular Technology, 68(12), 11476-11486.
+
+**Application Notes:**
+1. **Bosch**: "Thermal Management in Electric Vehicles" (2020 Technical White Paper)
+
+---
+
+**End of Section 5: Temperature-Based Derating**
+
+---
+
+## Section 6: CAN Communication and Monitoring
+
+Controller Area Network (CAN) communication enables monitoring, debugging, and integration with other vehicle systems. This section covers essential CAN messages and parameters.
+
+---
+
+### 6.1 Essential CAN Parameters
+
+#### Motor Control Status Messages
+
+**CAN Message 1: Motor Status (ID: 0x200, 10ms period)**
+
+```c
+typedef struct __attribute__((packed)) {
+    uint16_t motor_speed_rpm;       // Motor speed (RPM) [0-10000]
+    int16_t motor_torque_Nm_x10;    // Torque * 10 (0.1 Nm resolution)
+    uint16_t dc_voltage_V_x10;      // DC bus voltage * 10 (0.1V resolution)
+    uint16_t motor_current_A_x10;   // Motor current * 10 (0.1A resolution)
+} CAN_MotorStatus_t;
+
+void send_motor_status_can(CAN_MotorStatus_t *msg) {
+    uint8_t data[8];
+
+    // Pack data into CAN frame
+    data[0] = (msg->motor_speed_rpm >> 8) & 0xFF;
+    data[1] = msg->motor_speed_rpm & 0xFF;
+    data[2] = (msg->motor_torque_Nm_x10 >> 8) & 0xFF;
+    data[3] = msg->motor_torque_Nm_x10 & 0xFF;
+    data[4] = (msg->dc_voltage_V_x10 >> 8) & 0xFF;
+    data[5] = msg->dc_voltage_V_x10 & 0xFF;
+    data[6] = (msg->motor_current_A_x10 >> 8) & 0xFF;
+    data[7] = msg->motor_current_A_x10 & 0xFF;
+
+    can_transmit(0x200, data, 8);
+}
+```
+
+**CAN Message 2: Motor Temperatures (ID: 0x201, 100ms period)**
+
+```c
+typedef struct __attribute__((packed)) {
+    int16_t T_winding_C_x10;        // Winding temp * 10 (0.1°C resolution)
+    int16_t T_inverter_C_x10;       // Inverter temp * 10 (0.1°C resolution)
+    int16_t T_housing_C_x10;        // Housing temp * 10 (0.1°C resolution)
+    uint8_t thermal_derate_pct;     // Thermal derating (0-100%)
+    uint8_t reserved;
+} CAN_MotorTemperatures_t;
+```
+
+**CAN Message 3: Motor Currents (ID: 0x202, 10ms period)**
+
+```c
+typedef struct __attribute__((packed)) {
+    int16_t i_d_A_x10;              // d-axis current * 10 (0.1A resolution)
+    int16_t i_q_A_x10;              // q-axis current * 10 (0.1A resolution)
+    int16_t i_phase_a_A_x10;        // Phase A current * 10
+    int16_t i_phase_b_A_x10;        // Phase B current * 10
+} CAN_MotorCurrents_t;
+```
+
+#### Battery and Power Messages
+
+**CAN Message 4: Battery Status (ID: 0x210, 100ms period)**
+
+```c
+typedef struct __attribute__((packed)) {
+    uint16_t battery_voltage_V_x10; // Battery voltage * 10 (0.1V)
+    int16_t battery_current_A_x10;  // Battery current * 10 (+ = discharge)
+    uint16_t battery_soc_pct_x10;   // SOC * 10 (0.1% resolution)
+    int16_t battery_power_W;        // Battery power (W)
+} CAN_BatteryStatus_t;
+```
+
+**CAN Message 5: Power Flow (ID: 0x211, 100ms period)**
+
+```c
+typedef struct __attribute__((packed)) {
+    int16_t regen_power_W;          // Regen power (W, negative = regen)
+    uint16_t regen_energy_Wh;       // Cumulative regen energy (Wh)
+    uint16_t motor_power_W;         // Motor mechanical power (W)
+    uint16_t efficiency_pct;        // System efficiency (0-100%)
+} CAN_PowerFlow_t;
+```
+
+#### Control and Command Messages
+
+**CAN Message 6: Control Mode (ID: 0x220, 20ms period)**
+
+```c
+typedef enum {
+    CONTROL_MODE_IDLE = 0,
+    CONTROL_MODE_TORQUE,
+    CONTROL_MODE_SPEED,
+    CONTROL_MODE_REGEN,
+    CONTROL_MODE_FAULT
+} ControlMode_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t control_mode;           // Current control mode
+    int16_t torque_command_Nm_x10;  // Commanded torque * 10
+    int16_t speed_command_rpm;      // Commanded speed (RPM)
+    uint8_t throttle_position_pct;  // Throttle position (0-100%)
+    uint8_t brake_position_pct;     // Brake position (0-100%)
+    uint8_t regen_level;            // Regen level (0-4)
+    uint8_t status_flags;           // Status bits
+} CAN_ControlMode_t;
+```
+
+---
+
+### References for Section 6.1:
+
+**Standards:**
+1. **ISO 11898**: "Road Vehicles - Controller Area Network (CAN)"
+2. **SAE J1939**: "Serial Control and Communications Heavy Duty Vehicle Network"
+
+---
+
+### 6.2 Debug and Diagnostic Messages
+
+#### Field Weakening Debug (ID: 0x230, 50ms period)
+
+```c
+typedef struct __attribute__((packed)) {
+    uint16_t motor_speed_rpm;
+    uint16_t base_speed_rpm;
+    int16_t id_ref_A_x10;           // d-axis current reference
+    int16_t iq_ref_A_x10;           // q-axis current reference
+    uint8_t fw_active;              // Field weakening active flag
+    uint8_t fw_region;              // FW region (0=MTPA, 1=FW, 2=MTPV)
+} CAN_FieldWeakeningDebug_t;
+```
+
+#### Brake Blending Debug (ID: 0x231, 50ms period)
+
+```c
+typedef struct __attribute__((packed)) {
+    int16_t brake_force_total_N;    // Total braking force (N)
+    int16_t brake_force_regen_N;    // Regen braking force (N)
+    int16_t brake_force_friction_N; // Friction braking force (N)
+    uint8_t blend_factor_pct;       // Regen proportion (0-100%)
+    uint8_t brake_system_state;     // Brake system state
+    uint16_t decel_actual_mmss;     // Actual deceleration (mm/s²)
+} CAN_BrakeBlendingDebug_t;
+```
+
+#### Hill Hold Debug (ID: 0x232, 100ms period)
+
+```c
+typedef struct __attribute__((packed)) {
+    int16_t grade_angle_deg_x100;   // Grade angle * 100 (0.01° resolution)
+    int16_t grade_percent_x10;      // Grade * 10 (0.1%)
+    uint8_t hill_hold_active;       // Hill hold active flag
+    int16_t hold_torque_Nm_x10;     // Holding torque * 10
+    uint16_t hold_time_remaining_ms; // Time remaining (ms)
+    uint8_t hill_direction;         // 0=none, 1=uphill, 2=downhill
+} CAN_HillHoldDebug_t;
+```
+
+---
+
+### References for Section 6.2:
+
+**Application Notes:**
+1. **Vector**: "CAN Database and Message Development" (Application Guide)
+2. **Kvaser**: "CAN Protocol Tutorial" (Technical Documentation)
+
+---
+
+### 6.3 Performance Monitoring
+
+#### Energy Efficiency Tracking
+
+```c
+typedef struct {
+    uint32_t energy_from_battery_Wh; // Energy consumed from battery
+    uint32_t energy_to_motor_Wh;     // Energy delivered to motor
+    uint32_t energy_regen_Wh;        // Energy recovered via regen
+    float efficiency_drive_pct;      // Drive efficiency (%)
+    float efficiency_regen_pct;      // Regen efficiency (%)
+    uint32_t distance_traveled_m;    // Distance traveled (m)
+    float energy_per_km_Whpkm;       // Energy consumption (Wh/km)
+} EnergyMonitoring_t;
+
+void update_energy_monitoring(EnergyMonitoring_t *energy, float dt) {
+    // Read instantaneous power
+    float P_battery = read_battery_power();    // Watts
+    float P_motor = read_motor_power();        // Watts
+    float vehicle_speed = read_vehicle_speed(); // m/s
+
+    // Integrate energy (Power * time)
+    if (P_battery > 0.0f) {
+        // Discharging
+        energy->energy_from_battery_Wh += (P_battery * dt) / 3600.0f;
+    }
+    else {
+        // Charging (regen)
+        energy->energy_regen_Wh += (-P_battery * dt) / 3600.0f;
+    }
+
+    if (P_motor > 0.0f) {
+        energy->energy_to_motor_Wh += (P_motor * dt) / 3600.0f;
+    }
+
+    // Distance traveled
+    energy->distance_traveled_m += vehicle_speed * dt;
+
+    // Calculate efficiencies
+    if (energy->energy_from_battery_Wh > 0.1f) {
+        energy->efficiency_drive_pct = (energy->energy_to_motor_Wh /
+                                        energy->energy_from_battery_Wh) * 100.0f;
+    }
+
+    // Energy consumption per km
+    if (energy->distance_traveled_m > 100.0f) {  // At least 100m traveled
+        float distance_km = energy->distance_traveled_m / 1000.0f;
+        float net_energy = energy->energy_from_battery_Wh - energy->energy_regen_Wh;
+        energy->energy_per_km_Whpkm = net_energy / distance_km;
+    }
+}
+
+// CAN Message 7: Energy Monitoring (ID: 0x240, 1000ms period)
+typedef struct __attribute__((packed)) {
+    uint32_t energy_from_battery_Wh;
+    uint32_t energy_regen_Wh;
+    uint16_t efficiency_drive_pct;
+    uint16_t energy_per_km_Whpkm;
+} CAN_EnergyMonitoring_t;
+```
+
+#### Performance Metrics
+
+```c
+// CAN Message 8: Performance Metrics (ID: 0x241, 1000ms period)
+typedef struct __attribute__((packed)) {
+    uint16_t max_motor_speed_rpm;    // Peak speed recorded
+    int16_t max_motor_torque_Nm_x10; // Peak torque recorded
+    uint16_t max_motor_power_kW;     // Peak power recorded
+    uint32_t motor_operating_hours;  // Total operating hours
+    uint32_t distance_total_km;      // Odometer (km)
+    uint16_t regen_events_count;     // Number of regen events
+    uint16_t avg_regen_power_W;      // Average regen power
+} CAN_PerformanceMetrics_t;
+```
+
+---
+
+### References for Section 6.3:
+
+**Standards:**
+1. **ISO 15118**: "Road Vehicles - Vehicle to Grid Communication Interface"
+
+**Papers:**
+1. Yilmaz, M., & Krein, P. T. (2013). "Review of Battery Charger Topologies, Charging Power Levels, and Infrastructure for Plug-In Electric and Hybrid Vehicles." IEEE Transactions on Power Electronics, 28(5), 2151-2169.
+
+---
+
+### 6.4 Fault Reporting and Diagnostics
+
+#### Fault Code System
+
+```c
+typedef enum {
+    FAULT_NONE = 0x0000,
+
+    // Motor faults (0x01xx)
+    FAULT_MOTOR_OVERSPEED = 0x0101,
+    FAULT_MOTOR_OVERCURRENT = 0x0102,
+    FAULT_MOTOR_OVERTEMP = 0x0103,
+    FAULT_MOTOR_STALL = 0x0104,
+
+    // Inverter faults (0x02xx)
+    FAULT_INVERTER_OVERVOLTAGE = 0x0201,
+    FAULT_INVERTER_UNDERVOLTAGE = 0x0202,
+    FAULT_INVERTER_OVERCURRENT = 0x0203,
+    FAULT_INVERTER_OVERTEMP = 0x0204,
+    FAULT_INVERTER_DESATURATION = 0x0205,
+
+    // Battery faults (0x03xx)
+    FAULT_BATTERY_OVERVOLTAGE = 0x0301,
+    FAULT_BATTERY_UNDERVOLTAGE = 0x0302,
+    FAULT_BATTERY_OVERCURRENT = 0x0303,
+    FAULT_BATTERY_OVERTEMP = 0x0304,
+    FAULT_BATTERY_COMM_LOSS = 0x0305,
+
+    // Sensor faults (0x04xx)
+    FAULT_SENSOR_TEMP = 0x0401,
+    FAULT_SENSOR_CURRENT = 0x0402,
+    FAULT_SENSOR_VOLTAGE = 0x0403,
+    FAULT_SENSOR_POSITION = 0x0404,
+
+    // System faults (0x05xx)
+    FAULT_SYSTEM_WATCHDOG = 0x0501,
+    FAULT_SYSTEM_CAN_TIMEOUT = 0x0502,
+    FAULT_SYSTEM_EEPROM = 0x0503
+} FaultCode_t;
+
+typedef struct {
+    FaultCode_t code;
+    uint32_t timestamp_ms;
+    uint8_t severity;           // 0=info, 1=warning, 2=error, 3=critical
+    float fault_value;          // Value that triggered fault
+    bool active;                // Fault currently active
+    uint16_t occurrence_count;  // Number of times fault occurred
+} Fault_t;
+
+// CAN Message 9: Active Faults (ID: 0x250, 100ms period)
+typedef struct __attribute__((packed)) {
+    uint16_t fault_code_1;
+    uint16_t fault_code_2;
+    uint16_t fault_code_3;
+    uint16_t fault_code_4;
+} CAN_ActiveFaults_t;
+
+// CAN Message 10: Fault Details (ID: 0x251, on-demand)
+typedef struct __attribute__((packed)) {
+    uint16_t fault_code;
+    uint32_t timestamp_ms;
+    uint8_t severity;
+    uint16_t fault_value_x10;
+    uint8_t occurrence_count;
+} CAN_FaultDetails_t;
+```
+
+#### Fault Logging and History
+
+```c
+#define FAULT_LOG_SIZE 32
+
+typedef struct {
+    Fault_t fault_log[FAULT_LOG_SIZE];
+    uint8_t fault_log_head;
+    uint8_t fault_log_count;
+    uint32_t total_faults;
+} FaultLogger_t;
+
+void log_fault(FaultLogger_t *logger, Fault_t *fault) {
+    // Add to circular buffer
+    logger->fault_log[logger->fault_log_head] = *fault;
+    logger->fault_log_head = (logger->fault_log_head + 1) % FAULT_LOG_SIZE;
+
+    if (logger->fault_log_count < FAULT_LOG_SIZE) {
+        logger->fault_log_count++;
+    }
+
+    logger->total_faults++;
+
+    // Send CAN message
+    CAN_FaultDetails_t msg;
+    msg.fault_code = fault->code;
+    msg.timestamp_ms = fault->timestamp_ms;
+    msg.severity = fault->severity;
+    msg.fault_value_x10 = (uint16_t)(fault->fault_value * 10.0f);
+    msg.occurrence_count = fault->occurrence_count;
+
+    can_transmit(0x251, (uint8_t*)&msg, sizeof(msg));
+
+    // Log to non-volatile memory
+    save_fault_to_eeprom(fault);
+}
+```
+
+#### Diagnostic Trouble Codes (DTCs)
+
+```c
+// CAN Message 11: DTC Summary (ID: 0x252, 1000ms period)
+typedef struct __attribute__((packed)) {
+    uint8_t dtc_count_total;        // Total DTCs stored
+    uint8_t dtc_count_active;       // Currently active DTCs
+    uint8_t dtc_count_critical;     // Critical DTCs
+    uint8_t system_health_pct;      // Overall system health (0-100%)
+    uint32_t uptime_hours;          // System uptime (hours)
+} CAN_DTCSummary_t;
+```
+
+---
+
+### References for Section 6.4:
+
+**Standards:**
+1. **ISO 14229**: "Road Vehicles - Unified Diagnostic Services (UDS)"
+2. **ISO 15765**: "Road Vehicles - Diagnostic on Controller Area Network (CAN)"
+3. **SAE J2012**: "Diagnostic Trouble Code Definitions"
+
+**Books:**
+1. *"Automotive Diagnostic Systems"* by Keith McCord - Chapter 4 (CAN Diagnostics)
+
+**Application Notes:**
+1. **Vector**: "Unified Diagnostic Services (UDS) Implementation Guide"
+
+---
+
+**End of Section 6: CAN Communication and Monitoring**
+
+---
+
+## Conclusion
+
+This document has covered advanced motor control strategies for electric vehicles, including:
+
+1. **Field Weakening Control**: Mathematics, implementation, and safety considerations
+2. **Regenerative Braking**: Physics, battery management, and user-selectable levels
+3. **Braking Strategy and Blending**: Algorithmic approaches for coordinating regen and friction braking
+4. **Hill Hold Control**: Theory, implementation strategies, and system integration
+5. **Temperature-Based Derating**: Thermal management for motors and inverters
+6. **CAN Communication**: Essential parameters, debugging, and fault reporting
+
+Each section provides:
+- Theoretical foundation with mathematical derivations
+- Practical C code implementations
+- Comprehensive references to books, papers, standards, and application notes
+
+This knowledge base enables the development of production-ready motor control systems for electric vehicles.
+
+---
+
