@@ -44,8 +44,6 @@
    - 6.3 Performance Monitoring
    - 6.4 Fault Reporting
 
-### 7. References and Resources
-
 ---
 
 ## Introduction
