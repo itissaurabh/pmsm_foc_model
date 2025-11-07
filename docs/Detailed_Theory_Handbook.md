@@ -955,6 +955,610 @@ Modern EV motor controllers include specialized features:
 
 ---
 
+## 3. Understanding Reference Frames - The Foundation of FOC
+
+### 3.1 What Is a Reference Frame?
+
+A **reference frame** (or coordinate system) is a perspective from which we observe and describe physical quantities. Think of it like this:
+
+**Analogy 1: Describing Position on Earth**
+- You can describe your location using:
+  - Latitude/Longitude (spherical coordinates)
+  - X/Y on a map (Cartesian coordinates)
+  - Distance/Direction from a landmark (polar coordinates)
+- **Same position, different descriptions**
+- Some coordinate systems make certain calculations easier
+
+**Analogy 2: Merry-Go-Round**
+- Standing on the ground (stationary frame): You see the horses going in circles
+- Sitting on a horse (rotating frame): The horses appear stationary, the world spins around you
+- **Same motion, different perspectives**
+
+In motor control, we describe the same electrical quantities (currents, voltages, magnetic fields) using different reference frames. **The physics doesn't change - only our mathematical description.**
+
+### 3.2 Why Do We Need Different Reference Frames?
+
+The fundamental challenge in AC motor control:
+
+**The Problem:**
+- Three-phase AC currents create a rotating magnetic field
+- This field is sinusoidal in time: i_a(t) = I·cos(ωt)
+- Time-varying sinusoids are hard to control with simple controllers
+- Traditional PI controllers work best with **DC (constant) signals**
+
+**The Solution:**
+- Transform to a reference frame that **rotates with the magnetic field**
+- In this rotating frame, AC quantities become DC quantities
+- Now we can use simple PI controllers!
+
+**This is the KEY INSIGHT of Field Oriented Control.**
+
+### 3.3 The Three Reference Frames in FOC
+
+For PMSM control, we use three reference frames:
+
+```
+Natural Frame (abc) → Stationary Frame (αβ) → Rotating Frame (dq)
+   3 phases              2 phases               2 phases
+  Time-varying         Time-varying           DC (constant)
+   Complex              Simpler               Simplest!
+```
+
+Let's understand each one in detail.
+
+### 3.4 Natural Reference Frame (abc)
+
+#### 3.4.1 Definition
+
+This is the **physical reference frame** - the actual three-phase windings in the motor.
+
+**Quantities in abc frame:**
+- Three phase currents: ia, ib, ic
+- Three phase voltages: Va, Vb, Vc
+- Spatially separated by 120° (physical winding positions)
+- Temporally sinusoidal (varying with electrical frequency)
+
+**Equations:**
+```
+ia(t) = I·cos(ωe·t)
+ib(t) = I·cos(ωe·t - 120°)
+ic(t) = I·cos(ωe·t - 240°)
+
+where:
+ωe = electrical frequency
+I = peak current
+```
+
+#### 3.4.2 Visualization
+
+**Spatial View (looking at motor end):**
+```
+        Phase A (0°)
+            ↑
+            │
+            │
+Phase C ────┼──── Phase B
+(240°)      │      (120°)
+            │
+            ↓
+```
+
+**Temporal View (currents vs time):**
+```
+Current
+  ^
+  │    ia
+  │   ╱╲╱╲╱╲
+  │  ╱  ╲  ╱╲
+  │ ╱    ╲╱  ╲
+  ├─────────────> Time
+  │╲    ╱╲    ╱
+  │ ╲  ╱  ╲  ╱ib
+  │  ╲╱    ╲╱
+  │    ic
+```
+
+#### 3.4.3 Characteristics
+
+**Advantages:**
+- ✓ Direct correspondence to physical hardware
+- ✓ Easy to measure (current sensors in each phase)
+- ✓ Natural for PWM generation (three switching legs)
+
+**Disadvantages:**
+- ✗ Three variables to track (redundant - ia + ib + ic = 0)
+- ✗ Time-varying sinusoids (hard to control)
+- ✗ Coupling between phases (changing one affects others)
+- ✗ Torque/flux relationship is non-obvious
+
+**When We Use It:**
+- Current measurement (sensor outputs)
+- PWM generation (inverter inputs)
+- Fault detection (imbalance detection)
+
+### 3.5 Stationary Reference Frame (αβ)
+
+#### 3.5.1 Definition
+
+The **αβ frame** (also called **stationary two-phase frame** or **Clarke frame**) reduces the three phases to two orthogonal components that are **stationary with respect to the stator**.
+
+**Key Concept:**
+- α-axis aligned with phase A
+- β-axis 90° ahead of α-axis (perpendicular)
+- Both axes fixed in space (don't rotate)
+
+**Why 2 axes instead of 3?**
+Because the three-phase system is **balanced**: ia + ib + ic = 0
+- This constraint means we only have 2 independent variables
+- The third phase is redundant information
+- We can describe everything with just 2 components!
+
+#### 3.5.2 Physical Interpretation
+
+**The αβ frame represents the magnetic field as a vector:**
+
+```
+         β-axis
+           ↑
+           │
+           │   B⃗ (magnetic field vector)
+           │  ↗
+           │ ╱
+           │╱ θ
+  ─────────┼─────────> α-axis
+           │
+           │
+```
+
+Instead of three sinusoidal currents, we now have:
+- **A single rotating vector** with constant magnitude
+- Position: angle θ from α-axis
+- Magnitude: √(iα² + iβ²)
+
+**This is called the "space vector" representation.**
+
+#### 3.5.3 Mathematical Relationship
+
+**From abc to αβ (Clarke Transformation):**
+```
+iα = (2/3) × (ia - ½·ib - ½·ic)
+iβ = (2/3) × (√3/2)·(ib - ic)
+```
+
+Or in matrix form:
+```
+[iα]     2   [  1     -1/2      -1/2   ] [ia]
+[iβ] = ───── [  0    √3/2     -√3/2   ] [ib]
+       3                                  [ic]
+```
+
+**Example:**
+At t=0, if ia = 10A, ib = -5A, ic = -5A:
+```
+iα = (2/3) × (10 - (-5)/2 - (-5)/2) = (2/3) × 15 = 10A
+iβ = (2/3) × (√3/2) × (-5 - (-5)) = 0A
+```
+Result: Vector points along α-axis with magnitude 10A.
+
+#### 3.5.4 Characteristics
+
+**Advantages:**
+- ✓ Only 2 variables instead of 3 (more efficient)
+- ✓ Orthogonal components (α and β independent)
+- ✓ Space vector representation (intuitive for field visualization)
+- ✓ Still time-varying sinusoids (same frequency as abc)
+
+**Disadvantages:**
+- ✗ Still time-varying (not suitable for simple PI control)
+- ✗ Coupling between torque and flux still exists
+- ✗ Not directly measurable (must be calculated)
+
+**When We Use It:**
+- Intermediate step in transformation (abc → αβ → dq)
+- Space vector PWM (SVPWM) calculations
+- Flux estimation
+- Motor modeling in simulation
+
+#### 3.5.5 The "Rotating Vector" Insight
+
+**Key Realization:**
+Three balanced sinusoidal currents → Single rotating vector in αβ plane
+
+**At any instant:**
+```
+iα(t) = I·cos(ωe·t)
+iβ(t) = I·sin(ωe·t)
+
+Magnitude: √(iα² + iβ²) = √(I²·cos²θ + I²·sin²θ) = I  (constant!)
+Angle: θ(t) = atan2(iβ, iα) = ωe·t  (rotating at ωe)
+```
+
+**This is beautiful:** The mess of three sinusoidal currents becomes a clean rotating vector!
+
+### 3.6 Rotating Reference Frame (dq)
+
+#### 3.6.1 Definition
+
+The **dq frame** (also called **synchronous rotating frame** or **Park frame**) is a coordinate system that **rotates with the rotor** at electrical speed ωe.
+
+**Axes Definition:**
+- **d-axis (direct axis):** Aligned with the rotor's magnetic field (North pole of magnets)
+- **q-axis (quadrature axis):** 90° ahead of d-axis (perpendicular to rotor flux)
+
+**Key Property:**
+In this frame, **AC quantities become DC** (constant values)!
+
+#### 3.6.2 Physical Interpretation
+
+**Imagine you're sitting on the rotor:**
+- The rotor appears stationary (you're rotating with it)
+- The stator magnetic field, if properly controlled, also appears stationary
+- Everything that was rotating now appears frozen!
+
+**Like riding the merry-go-round:**
+- On the ground: horses going in circles (abc frame)
+- On a horse: horses appear still, scenery spins (dq frame)
+
+```
+        d-axis (aligned with rotor flux)
+            ↑
+            │ ⃝  (N pole of magnet)
+            │
+            │
+            │
+  ──────────┼──────────> q-axis
+            │            (torque axis)
+            │
+            │ ⃝  (S pole of magnet)
+            ↓
+```
+
+#### 3.6.3 Mathematical Relationship
+
+**From αβ to dq (Park Transformation):**
+```
+id = iα·cos(θe) + iβ·sin(θe)
+iq = -iα·sin(θe) + iβ·cos(θe)
+```
+
+Or in matrix form:
+```
+[id]   [ cos(θe)   sin(θe)] [iα]
+[iq] = [-sin(θe)   cos(θe)] [iβ]
+```
+
+**This is a rotation matrix!** It rotates the αβ frame by angle θe to align with the rotor.
+
+**Where does θe come from?**
+- From position sensor (Hall, encoder, resolver)
+- Or estimated (sensorless control)
+- This is the rotor's electrical position
+
+#### 3.6.4 Physical Meaning of d and q Currents
+
+**d-axis current (id):**
+- Component aligned with rotor magnets
+- Affects the magnetic flux
+- For surface PMSMs: set id = 0 (magnets provide sufficient flux)
+- For IPMs: can use negative id for field weakening at high speed
+
+**q-axis current (iq):**
+- Component perpendicular to rotor magnets
+- Produces torque!
+- **Torque = Kt × iq** (simple linear relationship)
+- This is what we control to regulate torque and speed
+
+**Why is this powerful?**
+- **Decoupled control:** id and iq are independent
+- **Like a DC motor:** Flux (id) and torque (iq) controlled separately
+- **Simple relationship:** Changing iq directly changes torque
+
+#### 3.6.5 Characteristics
+
+**Advantages:**
+- ✓ **DC quantities** at steady-state (constant id, iq)
+- ✓ **Decoupled flux and torque control** (id affects flux, iq affects torque)
+- ✓ **Simple PI controllers** work well (designed for DC signals)
+- ✓ **Direct torque control:** T = Kt·iq
+- ✓ **Intuitive physical meaning**
+
+**Disadvantages:**
+- ✗ Requires accurate rotor position (θe)
+- ✗ More complex transformations (computation needed)
+- ✗ Not directly measurable (must be calculated)
+
+**When We Use It:**
+- Current control (PI controllers operate in dq frame)
+- Torque control (set iq reference)
+- Field weakening (adjust id)
+- Motor modeling for control design
+
+### 3.7 Comparison of Reference Frames
+
+#### 3.7.1 Summary Table
+
+| Feature | abc Frame | αβ Frame | dq Frame |
+|---------|-----------|----------|----------|
+| **Number of Variables** | 3 | 2 | 2 |
+| **Nature of Signals** | Sinusoidal (AC) | Sinusoidal (AC) | Constant (DC)* |
+| **Reference** | Stator windings | Stator fixed | Rotor position |
+| **Rotation** | None | None | ωe (elec. speed) |
+| **Directly Measurable** | Yes (current sensors) | No | No |
+| **Used For** | Measurement, PWM | Intermediate, SVPWM | Control (PI loops) |
+| **Complexity** | High (3 coupled vars) | Medium (2 orthogonal) | Low (2 decoupled) |
+| **Torque-Flux Coupling** | Coupled | Coupled | **Decoupled** ✓ |
+| **Control Difficulty** | Hard | Hard | **Easy** ✓ |
+
+*At steady-state operation. During transients, id and iq vary.
+
+#### 3.7.2 Visual Comparison
+
+**Same current vector, three perspectives:**
+
+```
+ABC Frame (3-phase):
+ia: ──╱╲╱╲──
+ib: ─╱──╲╱──╲
+ic: ╱────╲──╱
+
+αβ Frame (2-phase stationary):
+     β
+     ↑
+     │  ⤸ (rotating vector)
+     │ ╱
+  ───┼──> α
+     │
+
+dq Frame (2-phase rotating):
+     q
+     ↑
+     │ • (stationary point!)
+     │
+  ───┼──> d
+     │
+```
+
+### 3.8 The Transformation Chain
+
+#### 3.8.1 Forward Path (Measurement → Control)
+
+**What we measure → What we control:**
+
+```
+Current Sensors → abc currents → Clarke → αβ currents → Park → dq currents
+   (hardware)      (3 AC)                    (2 AC)              (2 DC)
+                                                                    ↓
+                                                          PI Controllers
+                                                          (operate here!)
+```
+
+**Each transformation simplifies the problem:**
+1. abc → αβ: Reduce from 3 variables to 2
+2. αβ → dq: Convert AC to DC (align with rotor)
+
+#### 3.8.2 Reverse Path (Control → Actuation)
+
+**What controllers output → What motor needs:**
+
+```
+PI Controllers → dq voltages → Inv.Park → αβ voltages → Inv.Clarke → abc voltages → PWM
+  (vd*, vq*)      (2 DC)                     (2 AC)                      (3 AC)         ↓
+                                                                                    Inverter
+```
+
+**Each inverse transformation prepares for hardware:**
+1. dq → αβ: Convert DC commands back to AC
+2. αβ → abc: Convert 2-phase to 3-phase for inverter
+
+### 3.9 A Worked Example
+
+Let's track one set of currents through all frames.
+
+**Given:**
+- Motor running at 1000 RPM, P=4 pole pairs
+- Electrical frequency: fe = (4 × 1000)/60 = 66.67 Hz
+- Peak current: I = 10A
+- Time: t = 0
+- Rotor position: θe(t=0) = 30°
+
+**Step 1: abc frame at t=0**
+```
+ia = 10·cos(0°) = 10.0A
+ib = 10·cos(-120°) = -5.0A
+ic = 10·cos(-240°) = -5.0A
+
+Verification: ia + ib + ic = 10 - 5 - 5 = 0 ✓
+```
+
+**Step 2: Clarke transformation (abc → αβ)**
+```
+iα = (2/3)·(10 - (-5)/2 - (-5)/2)
+   = (2/3)·(10 + 2.5 + 2.5) = 10.0A
+
+iβ = (2/3)·(√3/2)·(-5 - (-5))
+   = (2/3)·(√3/2)·0 = 0A
+
+Result: Space vector points along α-axis, magnitude 10A
+```
+
+**Step 3: Park transformation (αβ → dq) with θe=30°**
+```
+id = iα·cos(30°) + iβ·sin(30°)
+   = 10·(√3/2) + 0·(1/2)
+   = 8.66A
+
+iq = -iα·sin(30°) + iβ·cos(30°)
+   = -10·(1/2) + 0·(√3/2)
+   = -5.0A
+
+Result: id = 8.66A (flux-producing), iq = -5.0A (torque-producing)
+```
+
+**Step 4: Interpretation**
+- Total current magnitude: √(id² + iq²) = √(75 + 25) = 10A ✓
+- Flux component: 8.66A
+- Torque: Te = Kt·iq (negative = regenerative braking)
+
+**Key Insight:**
+Same current, three descriptions:
+- abc: Three 10A peak sinusoids, 120° apart
+- αβ: 10A vector at 0° (pointing along α)
+- dq: 8.66A along d-axis, -5A along q-axis
+
+### 3.10 Why dq Frame is Special for Control
+
+#### 3.10.1 The DC Quantity Property
+
+**In steady-state operation:**
+
+If the motor runs at constant speed with constant torque:
+- abc currents: sinusoidal, frequency = ωe
+- αβ currents: sinusoidal, frequency = ωe
+- dq currents: **constant (DC)** ✓
+
+**Why?**
+- The dq frame rotates at ωe (same as field)
+- Relative to this frame, field appears stationary
+- Like watching a planet from the sun vs from Earth
+
+**PI controllers love DC signals:**
+```
+Traditional PI: works well with DC, struggles with AC
+FOC approach: Transform AC → DC, control, transform back
+```
+
+#### 3.10.2 The Decoupling Property
+
+**In abc/αβ frames:**
+- Torque depends on currents AND rotor position
+- Complex nonlinear relationship
+- Difficult to control independently
+
+**In dq frame:**
+```
+Flux ≈ id     (for SPM: flux from magnets, so id→0)
+Torque = Kt·iq  (simple, linear, direct)
+```
+
+**Decoupled means:**
+- Changing id doesn't affect torque
+- Changing iq doesn't affect flux
+- Can control them independently!
+
+**Like a DC motor:**
+```
+DC Motor:
+  Field current → Flux
+  Armature current → Torque
+
+FOC PMSM:
+  id → Flux (usually 0)
+  iq → Torque
+```
+
+#### 3.10.3 Why Alignment with Rotor Matters
+
+**Maximum Torque Per Ampere (MTPA):**
+
+For maximum torque with minimum current:
+- d-axis should align with rotor flux
+- q-axis should be perpendicular
+- All torque-producing current goes into iq
+- Zero wasted current in id (for SPM)
+
+**If misaligned:**
+- Some current wasted (doesn't produce torque)
+- Efficiency drops
+- Torque ripple increases
+
+**This is why accurate θe is critical!**
+
+### 3.11 Common Misconceptions
+
+**Misconception 1: "αβ and dq are different physical quantities"**
+- ❌ Wrong: They're the same electrical quantities, different viewpoints
+- ✓ Correct: Like describing velocity in different coordinate systems
+
+**Misconception 2: "Transformations change the motor's behavior"**
+- ❌ Wrong: Motor physics is unchanged
+- ✓ Correct: Transformations only change our mathematical description
+
+**Misconception 3: "dq currents are real currents flowing in the motor"**
+- ❌ Wrong: Only abc currents physically flow
+- ✓ Correct: dq currents are mathematical projections
+
+**Misconception 4: "We need transformations to run the motor"**
+- ❌ Wrong: Motor will run with abc voltages (like BLDC control)
+- ✓ Correct: Transformations enable *optimal* control (FOC)
+
+### 3.12 Key Takeaways - Reference Frames
+
+1. **Three frames, same physics:** abc (natural), αβ (stationary), dq (rotating)
+
+2. **Each transformation simplifies:**
+   - abc → αβ: 3 variables → 2 variables
+   - αβ → dq: AC signals → DC signals
+
+3. **dq frame is special:**
+   - Rotates with rotor
+   - AC becomes DC (easy to control)
+   - Flux and torque decoupled
+
+4. **Transformations don't change physics:**
+   - Same currents, voltages, power
+   - Just different mathematical descriptions
+   - Like changing units or coordinate systems
+
+5. **Position (θe) is critical:**
+   - Needed for Park transformation
+   - From sensor or estimator
+   - Accuracy affects control quality
+
+6. **Forward and reverse paths:**
+   - Forward: abc → αβ → dq (for control)
+   - Reverse: dq → αβ → abc (for PWM)
+
+7. **Why FOC works:**
+   - Converts AC motor control problem → DC motor control problem
+   - Enables simple PI controllers
+   - Achieves optimal performance
+
+### 3.13 Further Study - Reference Frames
+
+**Books:**
+1. **"Analysis of Electric Machinery and Drive Systems"** by Paul Krause
+   - Chapter 3: Reference Frame Theory
+   - The definitive mathematical treatment
+
+2. **"Vector Control and Dynamics of AC Drives"** by Novotny and Lipo
+   - Chapter 4: Coordinate Transformations
+   - Excellent physical intuition
+
+3. **"Control of Electric Machine Drive Systems"** by Seung-Ki Sul
+   - Chapter 2: Reference Frame Transformations
+   - Clear diagrams and examples
+
+**Videos:**
+1. **NPTEL - Electric Drives:** Lecture series on reference frames
+2. **YouTube: "Understanding dq Transformation"** by MATLAB
+3. **YouTube: "Clarke and Park Transforms Explained"** by Texas Instruments
+
+**Application Notes:**
+1. **Texas Instruments:** "Clarke & Park Transforms on the TMS320C2xx" (BPRA048)
+2. **STMicroelectronics:** "Field Oriented Control of PMSM" (AN1946)
+3. **Microchip:** "Sensored FOC for PMSM" - Chapter 3: Transformations
+
+**Interactive Tools:**
+1. **MATLAB/Simulink:** Build transformation blocks and visualize
+2. **Desmos/GeoGebra:** Plot rotating vectors in different frames
+3. **Scope tool in Simulink:** View abc, αβ, dq simultaneously
+
+---
+
+*End of Section 3 - Understanding Reference Frames*
+
+---
+
 ## 4. Position Sensors for Motor Control
 
 ### 4.1 Why Do We Need Position Sensors?
