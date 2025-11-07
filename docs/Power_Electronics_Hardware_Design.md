@@ -230,3 +230,249 @@ DC Bus ──→ Power Stage ──→ Motor (3-phase)
 
 ---
 
+## 2. Power Stage Fundamentals
+
+### 2.1 Three-Phase H-Bridge (Six-Switch Inverter)
+
+The three-phase inverter, also called a six-switch bridge or three-phase H-bridge, is the heart of the motor controller. It converts DC voltage from the battery/power supply into three-phase AC voltages with variable amplitude and frequency.
+
+**Circuit Topology:**
+```
+                    VDC+
+                     │
+         ┌───────────┼───────────┼───────────┐
+         │           │           │           │
+        Q1          Q3          Q5          │
+    (High-side)  (High-side)  (High-side)   │
+         │           │           │           │
+    ├────┼────── ├───┼────── ├───┼──────     │
+    │    A       │   B       │   C          │  DC Link
+    │    Phase   │   Phase   │   Phase      │  Capacitor
+    ├────┼────── ├───┼────── ├───┼──────     │   (Cdc)
+         │           │           │           │
+        Q2          Q4          Q6          │
+    (Low-side)   (Low-side)   (Low-side)    │
+         │           │           │           │
+         └───────────┴───────────┴───────────┘
+                     │
+                    VDC-
+                     │
+    To Motor:     Phase A    Phase B    Phase C
+```
+
+**Key Components:**
+
+1. **Power Switches (Q1-Q6)**:
+   - MOSFETs for <1000V applications
+   - IGBTs for >600V high-power applications
+   - SiC MOSFETs for high-efficiency designs
+   - Each switch rated for full DC bus voltage and phase current
+
+2. **DC Link Capacitor (Cdc)**:
+   - Stores energy and filters ripple current
+   - Typical: 100-500 μF per kW of power
+   - Must handle high RMS ripple current (0.3-0.5× motor current)
+   - Low ESR and ESL critical for voltage stability
+
+3. **Gate Drivers**:
+   - Isolated drivers for high-side switches (Q1, Q3, Q5)
+   - Non-isolated or low-side drivers for Q2, Q4, Q6
+   - Provide sufficient gate current for fast switching
+
+4. **Current Sensing**:
+   - Inline shunt resistors in phase lines (3 shunts)
+   - Low-side shunt resistors (3 shunts in Q2, Q4, Q6 source)
+   - Single DC bus shunt (1 shunt in VDC- return)
+   - Hall effect sensors (isolated, no power loss)
+
+### 2.2 Operating Modes and Switching States
+
+**Switching States:**
+
+The inverter has **8 possible switching states** (2³ = 8):
+
+| State | Q1 | Q3 | Q5 | Q2 | Q4 | Q6 | Va | Vb | Vc | Description |
+|-------|----|----|----|----|----|----|----|----|----|--------------------|
+| V0    | 0  | 0  | 0  | 1  | 1  | 1  | 0  | 0  | 0  | Zero vector (all low) |
+| V1    | 1  | 0  | 0  | 0  | 1  | 1  | 2/3Vdc | -1/3Vdc | -1/3Vdc | Active vector |
+| V2    | 1  | 1  | 0  | 0  | 0  | 1  | 1/3Vdc | 1/3Vdc | -2/3Vdc | Active vector |
+| V3    | 0  | 1  | 0  | 1  | 0  | 1  | -1/3Vdc | 2/3Vdc | -1/3Vdc | Active vector |
+| V4    | 0  | 1  | 1  | 1  | 0  | 0  | -2/3Vdc | 1/3Vdc | 1/3Vdc | Active vector |
+| V5    | 0  | 0  | 1  | 1  | 1  | 0  | -1/3Vdc | -1/3Vdc | 2/3Vdc | Active vector |
+| V6    | 1  | 0  | 1  | 0  | 1  | 0  | 1/3Vdc | -2/3Vdc | 1/3Vdc | Active vector |
+| V7    | 1  | 1  | 1  | 0  | 0  | 0  | 0  | 0  | 0  | Zero vector (all high) |
+
+**Note**:
+- State "1" = switch ON, "0" = switch OFF
+- Va, Vb, Vc are phase voltages relative to DC bus midpoint
+- V0 and V7 are "zero vectors" (no net voltage applied)
+- V1-V6 are "active vectors" (apply voltage to motor)
+
+**Shoot-Through Prevention:**
+
+Critical safety requirement: **Never turn on both switches in the same leg simultaneously!**
+
+```
+PROHIBITED:  Q1=ON and Q2=ON  ──→ Short circuit across DC bus!
+```
+
+**Deadtime Implementation:**
+- Insert 0.5-2 μs deadtime between high-side OFF and low-side ON
+- Insert deadtime between low-side OFF and high-side ON
+- Typical deadtime: 1-2 μs for Si MOSFETs, 200-500 ns for SiC/GaN
+
+**Deadtime Side Effects:**
+- Voltage error: ΔV ≈ Vdc × (Td / Ts)
+- More pronounced at low speeds and high currents
+- Requires compensation in FOC algorithm (see Section 5.4.5 in main handbook)
+
+### 2.3 Power Flow and Regeneration
+
+**Motoring Mode (Power from DC Bus to Motor):**
+```
+Battery ──→ Inverter ──→ Motor
+(Discharging)            (Accelerating)
+```
+- Positive torque (accelerating)
+- Current flows from DC+ through high-side switches to motor
+- Returns through low-side switches to DC-
+
+**Regeneration Mode (Power from Motor to DC Bus):**
+```
+Battery ←── Inverter ←── Motor
+(Charging)            (Braking)
+```
+- Negative torque (braking)
+- Motor acts as generator
+- Current flows through freewheeling diodes back to DC bus
+- DC bus voltage rises unless battery can absorb power
+
+**Regeneration Considerations:**
+
+1. **DC Bus Overvoltage**:
+   - Battery has limited charge acceptance
+   - DC bus can rise to dangerous levels during heavy braking
+   - Mitigation: Active braking resistor (shunt regulator) or reduced regen torque
+
+2. **Braking Resistor Sizing**:
+   ```
+   P_brake = (m × v² / 2) / t_stop
+
+   Example: 1500 kg vehicle, 60 km/h → 0 in 3 seconds
+   P_brake = (1500 × 16.67² / 2) / 3 = 69.4 kW peak!
+   ```
+
+3. **Battery Charge Current Limits**:
+   - Lithium batteries typically limited to 0.5-1C charge rate
+   - 20 kWh battery (50Ah nominal): Max charge ~25-50 kW
+   - Must limit regen torque if power exceeds battery capability
+
+### 2.4 Common Topologies and Variants
+
+**Standard Six-Switch Inverter:**
+- Most common topology
+- One leg per phase
+- Full four-quadrant operation (both motoring and regeneration)
+
+**Asymmetric Half-Bridge (Four-Switch Inverter):**
+```
+         VDC+
+          │
+    ┌─────┼─────┐
+    │     │     │
+   Q1    Q3   C1/C2
+    │     │   (Split)
+    A     B     │
+    │     │   C1/C2
+   Q2    Q4   (Split)
+    │     │     │
+    └─────┴─────┘
+         VDC-
+
+  Phase C connected to capacitor midpoint
+```
+- Lower cost (4 switches instead of 6)
+- Reduced performance and efficiency
+- Requires balanced split capacitors
+- Used in low-cost fans, pumps (not automotive)
+
+**Dual Motor Drive:**
+```
+  DC Bus ──→ Inverter 1 ──→ Motor 1 (Front axle)
+    │
+    └──────→ Inverter 2 ──→ Motor 2 (Rear axle)
+```
+- Two independent inverters from single DC bus
+- Individual torque control for each motor
+- Used in dual-motor EVs (AWD)
+- Requires careful power sharing and bus voltage management
+
+**Multi-Level Inverters (3-Level, 5-Level):**
+- Use multiple DC voltage levels (e.g., Vdc/2, Vdc)
+- Reduced voltage stress on switches
+- Lower dv/dt (reduced EMI)
+- More complex and expensive
+- Used in high-power industrial drives (>100 kW)
+
+**Key Design Parameters:**
+
+| Parameter | Typical Value | Notes |
+|-----------|---------------|-------|
+| DC Bus Voltage | 200-450 V (EV), 300-800 V (Industrial) | Nominal battery voltage |
+| DC Bus Capacitance | 100-500 μF/kW | Film or ceramic, low ESR |
+| Switching Frequency | 10-20 kHz | Trade-off: losses vs ripple |
+| Deadtime | 1-2 μs (Si), 0.2-0.5 μs (SiC) | Prevent shoot-through |
+| Maximum Modulation Index | 0.907 (linear SVPWM) | Can go to 0.952 (overmodulation) |
+
+**Component Selection Guidelines:**
+
+1. **MOSFET Voltage Rating**:
+   - V_rated ≥ 1.5 × Vdc_max (50% margin)
+   - Consider regen spikes and transients
+   - Example: 400V system → Use 650V or 750V MOSFETs
+
+2. **MOSFET Current Rating**:
+   - I_continuous ≥ 1.5 × I_phase_RMS
+   - I_peak ≥ 2 × I_phase_peak (short duration)
+   - Account for thermal derating
+
+3. **DC Link Capacitor**:
+   - Minimum capacitance: C ≥ (P_motor / (2π × f_line × Vdc × ΔV_ripple))
+   - RMS ripple current: I_ripple_RMS ≈ 0.4 × I_motor_RMS
+   - Use low-ESR film capacitors (polypropylene)
+
+---
+
+### References for Section 2:
+
+**Books:**
+1. *"Power Electronics: Converters, Applications, and Design"* by Ned Mohan, Tore M. Undeland, William P. Robbins - Chapter 8: Inverters
+2. *"Modern Power Electronics and AC Drives"* by Bimal K. Bose - Chapter 4: Voltage Source Inverters
+3. *"Electric Motor Drives: Modeling, Analysis, and Control"* by R. Krishnan - Chapter 5: Power Electronic Converters
+
+**Application Notes:**
+1. **Infineon**: "Six-Switch Three-Phase Inverter for Motor Control" (Application Note AN2017-12)
+2. **Texas Instruments**: "Understanding the Basics of a Three-Phase Motor Drive" (SLVA954)
+3. **ON Semiconductor**: "Three-Phase Inverter Design and Control Techniques" (AND9126/D)
+4. **Microchip**: "BLDC Motor Control Using dsPIC30F2010" (AN957) - Section on inverter topology
+
+**Articles and Papers:**
+1. "Comparative Study of Three-Phase Inverter Topologies for PMSM Drives" - IEEE PESC Conference
+2. "Deadtime Effects in Voltage Source Inverters and Compensation Methods" - IEEE Transactions on Industry Applications
+
+**Videos:**
+1. **Infineon**: "Three-Phase Inverter Operation and Control" (YouTube)
+2. **TI Precision Labs**: "Motor Drive Inverter Fundamentals" (YouTube series)
+3. **STM32 Motor Control**: "Power Stage Design for Motor Drives" (YouTube - STMicroelectronics)
+
+**App Notes - Regeneration and Braking:**
+1. **Tesla Motors**: "Regenerative Braking in Electric Vehicles" (SAE Paper 2013-01-1457)
+2. **Infineon**: "Braking Resistor Selection for Motor Drives" (Application Note AN2018-07)
+
+**Datasheets (Reference Examples):**
+1. Infineon IPT60R028G7 (650V SiC MOSFET for automotive inverters)
+2. ON Semiconductor NVH4L050N120SC1 (1200V SiC MOSFET, 50A)
+3. TDK B32774 series (DC link film capacitors for motor drives)
+
+---
+
