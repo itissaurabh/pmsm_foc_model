@@ -1458,3 +1458,931 @@ Use split-rail gate driver (e.g., UCC21732, SI8271) or discrete negative supply.
 
 ---
 
+## 5. Current Sensing
+
+### 5.1 Current Measurement Requirements for FOC
+
+Field Oriented Control requires accurate, fast current measurements to regulate motor torque and flux. The FOC algorithm transforms three-phase currents (ia, ib, ic) into the rotating dq reference frame where they appear as DC quantities suitable for PI control.
+
+**Key Requirements:**
+
+1. **Accuracy**:
+   - ±1-2% over full operating range
+   - Temperature coefficient: <100 ppm/°C
+   - Linearity error: <1% of full scale
+   - Example: 300A motor → ±3-6A accuracy needed
+
+2. **Bandwidth**:
+   - Must capture PWM current ripple (harmonics up to 5× PWM frequency)
+   - Minimum: 100 kHz for 10 kHz PWM
+   - Recommended: 200-500 kHz for clean measurements
+   - Anti-aliasing filter cutoff: 0.3-0.5× PWM frequency
+
+3. **Sampling Synchronization**:
+   - Sample at PWM center or valley (when current is stable)
+   - Avoid sampling during switching transients
+   - Triggered by PWM timer in microcontroller
+   - Aperture time: <100 ns for low jitter
+
+4. **Dynamic Range**:
+   - Must measure from near-zero to peak transient current
+   - Typical: 0.1A to 3× rated current
+   - Example: 100A rated, 300A peak → 3000:1 dynamic range
+   - Requires 12-bit ADC minimum (16-bit preferred)
+
+5. **Galvanic Isolation** (for inline/high-side sensing):
+   - Required for safety in high-voltage systems
+   - Isolation rating: >1000V minimum
+   - Common-mode rejection: >80 dB
+
+6. **Offset and Drift**:
+   - Zero-current offset: <±0.5% of full scale
+   - Offset drift: <50 mV over temperature
+   - Auto-zeroing during startup or idle periods
+   - Regular calibration in firmware
+
+### 5.2 Shunt Resistor Sensing (Low-Side, High-Side, Inline)
+
+**Shunt Resistor Principle:**
+
+A low-value precision resistor in the current path generates a voltage proportional to current:
+
+```
+V_shunt = I_phase × R_shunt
+
+Example: 100A current, 0.5 mΩ shunt
+V_shunt = 100 × 0.0005 = 50 mV
+```
+
+**Low-Side Shunt Sensing:**
+
+```
+               VDC+
+                │
+           ┌────┼────┐
+           │    │    │
+          Q1   Q3   Q5  (High-side switches)
+           │    │    │
+        ───┼────┼────┼─── To Motor
+           A    B    C
+           │    │    │
+          Q2   Q4   Q6  (Low-side switches)
+           │    │    │
+        ───┼────┼────┼───
+           │    │    │
+          Rsa  Rsb  Rsc  (Shunt resistors)
+           │    │    │
+           └────┴────┴─── VDC-
+```
+
+**Advantages:**
+- Simple and low-cost
+- Ground-referenced (easy to amplify)
+- No isolation required
+- Direct ADC connection possible
+
+**Disadvantages:**
+- Only measures current when low-side switch is ON
+- Cannot measure during freewheeling (high-side ON, low-side OFF)
+- Requires reconstruction algorithm for missing samples
+- DC bus current includes ripple and switching noise
+
+**Design Considerations:**
+
+1. **Shunt Resistor Value Selection**:
+   ```
+   Trade-off:
+   - Too low (e.g., 0.1 mΩ): Small signal, needs high amplification, noise susceptible
+   - Too high (e.g., 5 mΩ): Large power loss, voltage drop affects efficiency
+
+   Typical: 0.3-1.0 mΩ for high current (>100A)
+            1-5 mΩ for medium current (10-100A)
+
+   Power dissipation:
+   P_shunt = I²_RMS × R_shunt
+
+   Example: 150A RMS, 0.5 mΩ shunt
+   P_shunt = 150² × 0.0005 = 11.25 W per shunt!
+
+   Must use high-power shunt (≥15W rating with heatsinking)
+   ```
+
+2. **Shunt Resistor Specifications**:
+   - **Power rating**: 2-3× calculated power for derating
+   - **Tolerance**: ±1% or better
+   - **Temperature coefficient**: ±50 ppm/°C or better
+   - **Inductance**: <10 nH (use wide, flat design)
+   - **Type**: Metal foil (Vishay WSL, Isabellenhuette, Ohmite)
+
+3. **Kelvin Sensing Connection**:
+   ```
+                Current Flow
+                    ───→
+         ┌──────────────────────┐
+         │   Shunt Resistor     │
+         │    (Low Inductance)  │
+         └──┬──────────────┬────┘
+            │              │
+       Power│              │Power
+    Connection        Connection
+            │              │
+            │              │
+         ───┴──         ───┴──  Sense leads (separate)
+          +Sense        -Sense  (to amplifier)
+
+   Purpose: Eliminates voltage drop in power connections
+   ```
+
+**High-Side Shunt Sensing:**
+
+```
+            VDC+
+             │
+        ┌────┼────┬────┐
+        │    │    │    │
+       Rsa  Rsb  Rsc  │   (Shunt resistors in DC+ feed)
+        │    │    │    │
+        │    │    │    │
+       Q1   Q3   Q5   │   (High-side switches)
+        │    │    │    │
+     ───┼────┼────┼────┤
+        A    B    C    │
+        │    │    │    │
+       Q2   Q4   Q6   │   (Low-side switches)
+        │    │    │    │
+        └────┴────┴────┘
+             │
+            VDC-
+```
+
+**Advantages:**
+- Continuous current measurement (not switching-dependent)
+- Better for certain control algorithms
+
+**Disadvantages:**
+- **High common-mode voltage** (floating at DC+ potential)
+- Requires isolated amplifier or high CMRR amplifier
+- More expensive
+- Complex protection circuit design
+
+**Inline Shunt Sensing (Between Inverter and Motor):**
+
+```
+    Inverter              Motor
+    ┌──────┐             ┌─────┐
+    │  Q1  │    Rsa      │     │
+    ├──┬───┤───┤  ├─────┤  A  │
+    │  │Q2 │             │     │
+    ├──┼───┤    Rsb      │     │
+    │  │Q4 │───┤  ├─────┤  B  │
+    ├──┼───┤             │     │
+    │  │Q6 │    Rsc      │     │
+    └──┴───┘───┤  ├─────┤  C  │
+                          └─────┘
+```
+
+**Advantages:**
+- True phase current measurement
+- Bidirectional (motoring and regeneration)
+- Not affected by PWM switching state
+
+**Disadvantages:**
+- Higher common-mode voltage (floating at phase voltage)
+- Requires 3 isolated amplifiers
+- Most expensive option
+- Longer current path (additional inductance)
+
+### 5.3 Hall Effect Current Sensors
+
+Hall effect sensors provide galvanic isolation and can measure AC and DC currents without inserting resistance in the power path.
+
+**Operating Principle:**
+
+```
+    Primary Current (Motor phase)
+         │
+         ▼
+    ════════  (Conductor or PCB trace)
+         │
+         │    Magnetic Field ⊙
+      ┌──┴──┐
+      │ Hall│  ← Senses magnetic field
+      │Sensor│
+      └──┬──┘
+         │
+       Output (Proportional to current)
+```
+
+**Types:**
+
+1. **Open-Loop Hall Sensors** (e.g., Allegro ACS series):
+   - Direct Hall element output
+   - Lower cost ($2-5)
+   - Accuracy: ±1-3%
+   - Bandwidth: 100-200 kHz
+   - Offset drift: Moderate (±50 mV over temp)
+
+2. **Closed-Loop (Compensated) Hall Sensors** (e.g., LEM HASS, LA-H):
+   - Feedback coil nulls magnetic field
+   - Higher accuracy: ±0.5-1%
+   - Better linearity and lower drift
+   - Higher cost ($10-25)
+   - Bandwidth: 200-500 kHz
+   - Best for precision applications
+
+**Advantages:**
+- No power dissipation in measurement
+- Galvanic isolation (>3kV typical)
+- Measures DC to high frequency
+- No voltage drop in power path
+- Excellent for high current (up to 1000A+)
+
+**Disadvantages:**
+- More expensive than shunt + amplifier
+- Larger physical size (requires space near conductor)
+- Offset drift with temperature
+- Susceptible to external magnetic fields (motor, cables)
+- Requires careful placement and shielding
+
+**Design Considerations:**
+
+1. **Sensor Selection**:
+   ```
+   Current Range:
+   - 0-50A: ACS712 (±2%), ACS770 (±1%)
+   - 0-200A: ACS758 (±1%), LEM HTFS series
+   - >200A: LEM HASS, LA-H series, or custom PCB trace + open-loop
+   ```
+
+2. **PCB Layout for Integrated Hall Sensors**:
+   - Route current through sensor's integrated conductor
+   - Minimize stray magnetic fields from nearby traces
+   - Keep return currents away from sensor
+   - Use ground plane cutouts if needed
+
+3. **External Magnetic Field Immunity**:
+   - Shield sensor with ferromagnetic material (mu-metal)
+   - Differential sensing (two sensors, opposite polarity)
+   - Mount away from motor housing and high-current cables
+   - Twist motor phase cables to reduce radiated field
+
+4. **Calibration and Offset Compensation**:
+   - Auto-zero during startup (motor off, no current)
+   - Store offset in EEPROM
+   - Periodic re-calibration during idle periods
+   - Temperature compensation table in firmware
+
+### 5.4 Single Shunt vs Three Shunt Topologies
+
+**Three-Shunt Topology:**
+
+```
+Low-side shunt in each phase leg
+
+Advantages:
+✓ Direct measurement of all three phase currents
+✓ Simple reconstruction (ia, ib, ic directly measured)
+✓ Works at all duty cycles (0-100%)
+✓ Redundancy (can calculate 3rd current from two: ia + ib + ic = 0)
+✓ Best accuracy and reliability
+
+Disadvantages:
+✗ Higher cost (3 shunts + 3 amplifiers)
+✗ More complex analog circuitry
+✗ Larger PCB area
+```
+
+**Single-Shunt Topology (DC Bus Shunt):**
+
+```
+         VDC+
+          │
+     ┌────┼────┬────┐
+     │    │    │    │
+    Q1   Q3   Q5   │
+     │    │    │    │
+     A    B    C    │
+     │    │    │    │
+    Q2   Q4   Q6   │
+     │    │    │    │
+     └────┴────┴────┘
+          │
+         Rsh  (Single shunt in DC bus)
+          │
+         VDC-
+
+Current reconstruction based on switching states
+```
+
+**Advantages:**
+- Lowest cost (1 shunt, 1 amplifier)
+- Simplest analog design
+- Minimal PCB area
+
+**Disadvantages:**
+- Complex reconstruction algorithm required
+- Limited measurable duty cycle range (typically 10-90%)
+- Cannot measure at very low or very high modulation indices
+- Requires two ADC samples per PWM cycle
+- Lower accuracy than three-shunt
+- Algorithm complexity increases software load
+
+**Single-Shunt Current Reconstruction:**
+
+The DC bus current contains information about phase currents depending on which switches are ON:
+
+```
+Example switching states:
+
+State: Q1=ON, Q2=OFF, Q3=OFF, Q4=ON, Q5=OFF, Q6=ON
+  Current path: ia flows through Q1 (positive)
+                ib and ic flow through Q4, Q6 (return)
+  DC bus current: I_dc = ia
+
+State: Q1=ON, Q2=OFF, Q3=ON, Q4=OFF, Q5=OFF, Q6=ON
+  DC bus current: I_dc = ia + ib
+```
+
+By sampling at specific times and knowing the switching state:
+1. Sample during first active vector → get one current
+2. Sample during second active vector → get another current
+3. Calculate third current: ic = -(ia + ib)
+
+**Challenges:**
+- Switching transients require delay before sampling (dead zone)
+- At high/low modulation, insufficient time for stable measurement
+- Requires precise timing and fast ADC
+
+**When to Use Each Topology:**
+
+| Application | Recommended Topology | Reason |
+|-------------|---------------------|--------|
+| Cost-sensitive (e-bike, tools) | Single-shunt | Lowest cost, acceptable performance |
+| General EV, industrial | Three-shunt | Best balance of cost/performance |
+| High-performance servo | Three-shunt or Hall | Accuracy and full duty cycle range |
+| Very high current (>300A) | Hall effect | No power loss, isolation |
+| Safety-critical (automotive) | Three-shunt | Redundancy, proven reliability |
+
+### 5.5 Current Sensor Placement and FOC Algorithm Impact
+
+**Placement Options:**
+
+1. **Low-Side Shunt (Most Common)**:
+   ```
+   Location: Between low-side MOSFET source and ground
+
+   Measurement timing:
+   - Sample when low-side switch is ON
+   - Typical: At PWM valley (center of on-time)
+   - ADC trigger from PWM timer
+   ```
+
+2. **Inline Shunt**:
+   ```
+   Location: Between inverter output and motor terminal
+
+   Advantages for FOC:
+   - True phase current (not affected by switching)
+   - Can use slower ADC (no switching noise)
+   - Better for sensorless FOC (cleaner back-EMF measurement)
+   ```
+
+3. **DC Link Shunt**:
+   ```
+   Location: DC bus (positive or negative rail)
+
+   FOC considerations:
+   - Requires current reconstruction algorithm
+   - Software must track switching states
+   - PWM pattern may need modification at extremes
+   - Higher CPU load
+   ```
+
+**ADC Sampling Strategy for FOC:**
+
+**Synchronous Sampling (Recommended):**
+
+```
+PWM Cycle:
+     ┌──────┐                    ┌──────┐
+     │      │                    │      │
+─────┘      └────────────────────┘      └─────
+     ↑                           ↑
+   Sample                      Sample
+   (valley)                   (valley)
+
+Timing:
+- Trigger ADC at PWM valley (or peak for center-aligned)
+- Current is stable (mid-pulse, no switching)
+- Sample all three phases simultaneously (if possible)
+- Conversion time: <2 μs for 12-bit
+```
+
+**Oversampling for Noise Reduction:**
+
+For high-noise environments:
+- Sample 4× per PWM cycle
+- Average results (digital filtering)
+- Improves SNR by √N (2× better with 4 samples)
+- Trade-off: Higher CPU load
+
+**Offset Calibration:**
+
+```
+Firmware calibration routine:
+
+1. At startup (motor off):
+   FOR i = 1 to 1000:
+     Sample ADC channels (ia, ib, ic)
+     Accumulate samples
+
+   offset_a = average(samples_a)
+   offset_b = average(samples_b)
+   offset_c = average(samples_c)
+
+2. During runtime:
+   i_measured_a = ADC_a - offset_a
+   i_measured_b = ADC_b - offset_b
+   i_measured_c = ADC_c - offset_c
+
+3. Periodic re-cal (every 10 minutes idle):
+   Update offsets during zero-current periods
+```
+
+**Anti-Aliasing Filter Design:**
+
+Required before ADC to prevent high-frequency noise aliasing:
+
+```
+         R (10-100Ω)
+Sensor ──┤  ├────┬──── ADC Input
+               │
+              ┴ C (1-10nF)
+              ─
+              ─
+               │
+              GND
+
+Cutoff frequency:
+  f_c = 1 / (2π × R × C)
+
+Design rule:
+  f_c = 0.3 to 0.5 × f_PWM
+
+Example: 10 kHz PWM
+  f_c = 3-5 kHz
+  Use R=10kΩ, C=4.7nF → f_c ≈ 3.4 kHz
+```
+
+**Impact on FOC Performance:**
+
+| Current Sensing Aspect | Impact on FOC | Recommendation |
+|------------------------|---------------|----------------|
+| Accuracy (±1-2%) | Torque ripple, efficiency | Use ±1% shunts, calibrate offsets |
+| Bandwidth (>100 kHz) | Current loop stability | 200+ kHz for clean control |
+| Offset drift | d-axis current error | Auto-zero every startup |
+| Phase matching | Current imbalance | Match all 3 channels within ±0.5% |
+| Sampling delay | Phase lag in current loop | Minimize, compensate in controller |
+| Noise (SNR >60dB) | Control jitter | Good filtering, layout, grounding |
+
+---
+
+### References for Section 5:
+
+**Books:**
+1. *"Current Sensing Techniques: A Review"* by Carsten Klumpner - IEEE Industrial Electronics Magazine
+2. *"Motor Control Sensors and Actuators"* by Kenjo and Nagamori - Chapter 4
+
+**Application Notes:**
+1. **Texas Instruments**: "Current Sensing for Motor Control" (SLVA959)
+2. **Infineon**: "Shunt-Based Current Sensing Techniques for Motor Control" (Application Note AN2018-11)
+3. **STMicroelectronics**: "Single-Shunt Current Sensing in Motor Control" (AN4946)
+4. **Allegro Microsystems**: "Hall Effect Current Sensing Application Guide" (AN296151)
+5. **LEM**: "Current Transducers Selection Guide and Application Notes"
+6. **Microchip**: "Single-Shunt Three-Phase Current Reconstruction Algorithm" (AN1299)
+
+**Articles and Papers:**
+1. "Comparison of Current Sensing Techniques for Motor Drives" - IEEE APEC Conference
+2. "Single Shunt Current Measurement for PMSM Drives" - IEEE Transactions on Industry Applications
+3. "Precision Current Measurement Techniques for High-Performance Motor Control" - PCIM Europe
+
+**Videos:**
+1. **TI Precision Labs**: "Current Sensing in Motor Drives" (YouTube series)
+2. **Allegro Microsystems**: "Hall Effect Current Sensors Explained" (YouTube)
+3. **STM32 Motor Control**: "Current Sensing Methods Comparison" (YouTube)
+
+**Datasheets (Representative Examples):**
+1. **Shunt Resistors**: Vishay WSL3637, Isabellenhuette PBV, Ohmite LVK12
+2. **Hall Sensors**: Allegro ACS772, ACS730; LEM HASS 50-S, LA 55-P
+3. **Shunt Amplifiers**: Texas Instruments INA240, INA181; Analog Devices AD8417
+
+**Design Tools:**
+1. **Texas Instruments**: Current Sense Amplifier Design Calculator
+2. **Allegro**: Hall Sensor Selection Tool
+3. **LEM**: Current Transducer Selector
+
+---
+
+## 6. Switching Dynamics and dv/dt Effects
+
+### 6.1 Switching Transients in Power MOSFETs
+
+When a MOSFET switches, the rapid change in voltage and current creates transients that affect system performance, efficiency, and EMI.
+
+**MOSFET Turn-ON Sequence:**
+
+```
+Phase 1: Gate charging (0 to Vth)
+  - Gate voltage rises from 0V to threshold
+  - No drain current yet
+  - Duration: td_on (turn-on delay)
+
+Phase 2: Miller plateau (Vth to Vgs_miller)
+  - Drain current rises rapidly
+  - Gate voltage plateaus (Miller effect)
+  - VDS still high (MOSFET in active region)
+  - Duration: tri (current rise time)
+  - High power dissipation: P = VDS × ID
+
+Phase 3: Voltage fall
+  - Drain voltage falls to RDS_on × ID
+  - Gate continues charging through Cgd (Miller capacitance)
+  - Duration: tfv (voltage fall time)
+  - Still high power dissipation
+
+Phase 4: Final gate charging
+  - Gate voltage rises to final value (VGS_drive)
+  - MOSFET fully ON
+  - Low conduction loss: P = ID² × RDS_on
+```
+
+**MOSFET Turn-OFF Sequence:**
+
+Reverse of turn-on:
+1. Gate discharge begins
+2. VDS rises (voltage rise time: trv)
+3. Miller plateau
+4. Current falls (current fall time: tfi)
+5. Gate fully discharged
+
+**Switching Loss Calculation:**
+
+```
+Energy loss per switching cycle:
+
+E_on = ∫(VDS × ID × dt) during turn-on
+     ≈ (1/6) × VDS × ID × (tri + tfv)
+
+E_off = ∫(VDS × ID × dt) during turn-off
+      ≈ (1/6) × VDS × ID × (trv + tfi)
+
+Total switching loss:
+P_sw = (E_on + E_off) × f_sw
+
+Example:
+  VDS = 400V, ID = 150A
+  tri + tfv = 100 ns (turn-on)
+  trv + tfi = 80 ns (turn-off)
+  f_sw = 10 kHz
+
+  E_on = (1/6) × 400 × 150 × 100n = 1 mJ
+  E_off = (1/6) × 400 × 150 × 80n = 0.8 mJ
+  P_sw = (1 + 0.8) mJ × 10 kHz = 18W per MOSFET
+
+  Six MOSFETs: 108W total switching loss!
+```
+
+### 6.2 dv/dt Effects on System Performance
+
+**What is dv/dt?**
+
+Rate of change of voltage during switching:
+
+```
+dv/dt = ΔVDS / Δt
+
+Example:
+  VDS changes from 400V to 0V in 50 ns
+  dv/dt = 400V / 50ns = 8000 V/μs = 8 V/ns
+```
+
+**Problems Caused by High dv/dt:**
+
+1. **Gate Coupling and False Turn-ON**:
+   ```
+   High dv/dt on drain couples through Cgd (Miller capacitance)
+
+   IG_induced = Cgd × (dv/dt)
+
+   Example:
+     Cgd = 200 pF, dv/dt = 10 V/ns
+     IG_induced = 200p × 10V/ns = 2A!
+
+   This current can charge the gate of an OFF MOSFET → false turn-on
+   ```
+
+   **Mitigation:**
+   - Use negative gate voltage when OFF (-3V to -5V for SiC)
+   - Low-impedance gate driver (strong pull-down)
+   - Add Miller clamp circuit
+
+2. **Common-Mode Noise in Isolated Systems**:
+   - High dv/dt couples through isolation barrier capacitance
+   - Creates common-mode current in ground loops
+   - Corrupts low-level signals (current sensing, position sensors)
+
+   **Mitigation:**
+   - Use high CMRR amplifiers (>80 dB)
+   - Proper grounding (star ground topology)
+   - Twisted pair for sensor signals
+   - Common-mode chokes on signal lines
+
+3. **Motor Bearing Currents**:
+   ```
+   Motor winding to ground capacitance (Cwg) charges through bearings
+
+   I_bearing = Cwg × (dv/dt)
+
+   High dv/dt → high bearing current → bearing erosion → premature failure
+   ```
+
+   **Mitigation:**
+   - Slower switching (higher Rg)
+   - Common-mode chokes on motor cables
+   - Insulated bearings
+   - Motor frame grounding (with proper CM filter)
+   - Use SiC with controlled di/dt and dv/dt
+
+4. **Conducted and Radiated EMI**:
+   - High dv/dt creates high-frequency harmonics
+   - Couples to cables and radiates
+
+   **Mitigation:**
+   - See Section 9 (EMI/EMC Considerations)
+   - RC snubbers
+   - Proper shielding
+
+### 6.3 Gate Resistance Trade-offs
+
+**Effect of Gate Resistance on Switching Speed:**
+
+```
+Higher Rg → Slower switching → Lower dv/dt, di/dt
+
+Advantages of high Rg (slow switching):
+✓ Lower EMI
+✓ Reduced ringing and overshoot
+✓ Less stress on MOSFETs
+✓ Lower bearing currents
+✓ More forgiving of layout imperfections
+
+Disadvantages:
+✗ Higher switching losses
+✗ Higher junction temperature
+✗ Lower efficiency
+✗ May require larger heatsink
+
+Advantages of low Rg (fast switching):
+✓ Lower switching losses
+✓ Higher efficiency
+✓ Lower junction temperature
+✓ Can use higher PWM frequency
+
+Disadvantages:
+✗ Higher EMI
+✗ More ringing and overshoot
+✗ Requires excellent PCB layout
+✗ May cause false turn-on
+✗ Higher bearing currents
+```
+
+**Optimal Rg Selection Process:**
+
+1. Start with manufacturer recommendation (datasheet)
+2. Calculate based on target switching time (see Section 4.5)
+3. Test with oscilloscope:
+   - Measure VDS and ID waveforms
+   - Check for overshoot (<20% acceptable)
+   - Check for ringing (should damp within 2-3 cycles)
+   - Measure EMI (near-field probe or spectrum analyzer)
+4. Iterate:
+   - If too much ringing → increase Rg
+   - If losses too high → decrease Rg
+   - Use asymmetric Rg (different for turn-on and turn-off)
+
+**Asymmetric Gate Drive:**
+
+```
+Recommended for low EMI with acceptable efficiency:
+
+Rg_on = 10-20Ω  (slow turn-on, low EMI)
+Rg_off = 2-5Ω   (fast turn-off, low switching loss)
+
+Circuit:
+        Rg_on (15Ω)
+         ─RRR─
+            │
+   Gate ────┼──── MOSFET Gate
+   Drive    │
+         ───┤>├─── Diode (bypass Rg_on during turn-off)
+            │
+        Rg_off (3Ω)
+         ─RRR─
+            │
+           GND
+```
+
+### 6.4 Snubber Circuits
+
+Snubbers absorb energy during switching transients to reduce voltage overshoot and ringing.
+
+**RC Snubber (Most Common):**
+
+```
+         Drain
+          │
+      ┌───┴───┐
+      │MOSFET │
+      │       │
+      └───┬───┘
+          │ Source
+          ├────────→ (Power connection)
+          │
+       ┌──┴──┐
+       │     │
+      Rs    Cs   (Snubber across MOSFET)
+       │     │
+       └──┬──┘
+          │
+```
+
+**Design Equations:**
+
+```
+Snubber capacitor:
+  Cs = (Ls × ID²) / (2 × VDS × ΔV_allowed)
+
+Where:
+  Ls = parasitic inductance in power loop
+  ΔV_allowed = acceptable overshoot (e.g., 50V)
+
+Snubber resistor:
+  Rs = √(Ls / Cs) / 2  (critically damped)
+
+Example:
+  Ls = 50 nH (typical with good layout)
+  ID = 150A
+  VDS = 400V
+  ΔV_allowed = 50V
+
+  Cs = (50n × 150²) / (2 × 400 × 50) = 2.8 nF → use 3.3 nF
+
+  Rs = √(50n / 3.3n) / 2 = 1.95Ω → use 2.2Ω
+
+Power dissipation in snubber:
+  P_snubber = Cs × VDS² × f_sw
+  P_snubber = 3.3n × 400² × 10k = 5.3W
+
+  Use 2.2Ω, 10W resistor
+```
+
+**RCD Snubber (More Efficient):**
+
+```
+         Drain
+          │
+      ┌───┴───┐
+      │MOSFET │
+      └───┬───┘
+          │
+       ┌──┴──┐
+      Ds   Rs
+       │     │
+       └──┬──┘
+          │
+         Cs
+          │
+         GND
+
+Advantage: Energy returned to DC bus (via Ds)
+Disadvantage: More complex, requires fast recovery diode
+```
+
+**When to Use Snubbers:**
+
+- **Always**: For >500W systems and VDS >200V
+- **Critical**: For SiC MOSFETs (fast switching creates more ringing)
+- **Optional**: For <100W low-voltage systems with good PCB layout
+
+**Alternative to RC Snubbers:**
+
+- **Layout optimization** (minimize Ls) - most effective!
+- **Gate resistance tuning** (slow down switching)
+- **Active snubbers** (complex, used in high-power >100kW)
+
+### 6.5 Ringing, Overshoot, and EMI
+
+**Cause of Ringing:**
+
+```
+Parasitic inductance (Ls) + MOSFET output capacitance (Coss) form LC resonator
+
+Resonant frequency:
+  f_ring = 1 / (2π × √(Ls × Coss))
+
+Example:
+  Ls = 50 nH, Coss = 500 pF
+  f_ring = 1 / (2π × √(50n × 500p)) = 31.8 MHz
+
+This 30+ MHz ringing creates:
+  - EMI in AM radio band
+  - False triggering of logic circuits
+  - Voltage stress on MOSFETs
+```
+
+**Voltage Overshoot:**
+
+```
+ΔV_overshoot = Ls × (di/dt)
+
+Where di/dt during turn-off:
+  di/dt = ID / t_fall
+
+Example:
+  Ls = 50 nH, ID = 150A, t_fall = 50 ns
+  di/dt = 150A / 50ns = 3000 A/μs
+  ΔV_overshoot = 50n × 3000A/μs = 150V!
+
+Total voltage stress = VDC + ΔV_overshoot
+  = 400V + 150V = 550V
+
+Must ensure MOSFET rated for this (650V MOSFET minimum)
+```
+
+**Mitigation Strategies:**
+
+1. **Minimize Loop Inductance** (MOST IMPORTANT):
+   - Wide, short PCB traces
+   - Multi-layer PCB with power planes
+   - DC link capacitors close to MOSFETs (<10mm)
+   - Laminated bus bar for high power
+   - Target: Ls <20 nH for excellent performance, <50 nH acceptable
+
+2. **Gate Resistance Optimization**:
+   - Slow down switching to reduce di/dt
+   - Use 5-15Ω for SiC, 10-47Ω for Si
+   - Asymmetric drive (slow turn-on, moderate turn-off)
+
+3. **Snubber Circuits**:
+   - RC snubber across each MOSFET
+   - Sized as shown in Section 6.4
+
+4. **Controlled dv/dt Gate Drivers**:
+   - Some ICs have programmable dv/dt control
+   - Examples: UCC21750 (TI), 1ED3491 (Infineon)
+   - Trade-off: Slower switching, but controlled EMI
+
+5. **Low-Inductance DC Link Capacitors**:
+   - Use ceramic or film capacitors with low ESL
+   - Multiple smaller caps better than one large cap
+   - Mount very close to MOSFET drain/source
+
+**Acceptable Levels:**
+
+```
+Voltage overshoot: <20% of VDC (e.g., <80V for 400V system)
+Ringing amplitude: Should decay to <10% within 3 cycles
+Ringing frequency: 10-100 MHz typical (minimize with layout)
+```
+
+---
+
+### References for Section 6:
+
+**Books:**
+1. *"Switching Power Supply Design"* by Abraham Pressman - Chapter 6: Snubber Circuits
+2. *"Power Electronics: Converters, Applications, and Design"* by Mohan et al. - Chapter on switching dynamics
+
+**Application Notes:**
+1. **Infineon**: "Understanding and Minimizing Switching Losses" (AN2015-10)
+2. **Texas Instruments**: "Understanding and Applying Snubber Circuits for Power Switches" (SLVA298)
+3. **Wolfspeed**: "Managing dv/dt and di/dt in SiC Designs" (Application Note)
+4. **ON Semiconductor**: "Reducing Ringing and EMI in MOSFET Circuits" (AND9083/D)
+5. **STMicroelectronics**: "MOSFET Switching Loss and dv/dt Modeling" (AN5293)
+
+**Articles and Papers:**
+1. "Impact of Fast Switching SiC MOSFETs on Motor Drive dv/dt and Bearing Currents" - IEEE ECCE Conference
+2. "Snubber Design for High-Power Motor Drives" - PCIM Europe
+3. "Gate Driver Optimization for Reduced EMI in Motor Controllers" - IEEE Transactions on Power Electronics
+
+**Videos:**
+1. **TI Precision Labs**: "Understanding MOSFET Switching Losses" (YouTube)
+2. **Wolfspeed**: "dv/dt and di/dt Control in SiC Designs" (YouTube)
+3. **Keysight Technologies**: "How to Measure Power MOSFET Switching Waveforms" (YouTube)
+
+**Test Equipment Application Notes:**
+1. **Tektronix**: "Power MOSFET Switching Loss Measurement" (Application Note 243W-18447-1)
+2. **Rohde & Schwarz**: "EMI Debugging Techniques for Power Electronics" (Application Note)
+
+---
+
