@@ -2844,3 +2844,676 @@ Failure modes:
 
 ---
 
+## 8. PCB Layout and Design
+
+Proper PCB layout is critical for motor controller performance, reliability, and EMI compliance. Poor layout can cause excessive ringing, voltage overshoot, EMI, and even device failure.
+
+### 8.1 High-Current Trace Width Calculations
+
+**Trace Width for Current Carrying Capacity:**
+
+The IPC-2221 standard provides guidelines for trace width based on allowable temperature rise.
+
+```
+Formula (IPC-2221):
+
+A = (I / (k × ΔT^0.44))^(1/0.725)
+
+Where:
+  A = Cross-sectional area (mils²)
+  I = Current (A)
+  k = 0.048 for external traces, 0.024 for internal traces
+  ΔT = Temperature rise above ambient (°C)
+
+Width = A / (copper_thickness_oz × 1.378)
+
+Note: 1 oz copper = 1.378 mils thick = 35 μm
+```
+
+**Practical Calculations:**
+
+```
+Example 1: 100A phase current, external trace, 1 oz copper, 20°C rise
+
+A = (100 / (0.048 × 20^0.44))^(1/0.725)
+A = (100 / (0.048 × 3.31))^1.38
+A = (100 / 0.159)^1.38
+A = 629^1.38
+A = 7930 mils²
+
+Width = 7930 / (1 × 1.378) = 5755 mils = 146 mm!
+
+Clearly too wide for practical PCB!
+```
+
+**Solutions for High Current:**
+
+1. **Multiple Layers in Parallel**:
+   ```
+   100A trace, 4 layers of 2 oz copper:
+
+   Current per layer: 100A / 4 = 25A
+
+   For 25A, 2 oz copper, 20°C rise:
+   A = (25 / (0.048 × 20^0.44))^1.38 = 495 mils²
+   Width = 495 / (2 × 1.378) = 180 mils = 4.5 mm per layer
+
+   Much more reasonable!
+   ```
+
+2. **Heavy Copper PCB**:
+   - 2 oz (70 μm): 2× current capacity vs 1 oz
+   - 3 oz (105 μm): 3× current capacity
+   - 4 oz (140 μm): 4× current capacity
+   - 6 oz (210 μm): 6× current capacity (expensive, special order)
+
+3. **Copper Bus Bars**:
+   - For very high current (>200A per phase)
+   - Laminated copper sheets bolted to PCB
+   - Lowest resistance and inductance
+   - Used in >50 kW automotive inverters
+
+**Practical Design Guidelines:**
+
+| Current | 1 oz Cu | 2 oz Cu | 4 oz Cu | Typical Use |
+|---------|---------|---------|---------|-------------|
+| 10A | 100 mil (2.5mm) | 50 mil (1.3mm) | 25 mil (0.6mm) | Gate drive power |
+| 25A | 250 mil (6.4mm) | 125 mil (3.2mm) | 60 mil (1.5mm) | Low-side shunt |
+| 50A | 500 mil (12.7mm) | 250 mil (6.4mm) | 125 mil (3.2mm) | Phase output |
+| 100A | 1000 mil (25mm) | 500 mil (12.7mm) | 250 mil (6.4mm) | High power phase |
+| 200A | Bus bar | 1000 mil (25mm) | 500 mil (12.7mm) | Very high power |
+
+**Via Current Capacity:**
+
+```
+Standard via: 0.3mm (12 mil) drill, plated
+
+Current capacity: ~1-2A per via
+
+For 100A trace transition between layers:
+  Need 50-100 vias! (via array)
+
+Via array design:
+  - Space vias 0.5-1.0mm apart
+  - Cover trace width
+  - Stitching vias every 5-10mm along trace
+```
+
+**Voltage Drop Considerations:**
+
+```
+Resistance per unit length:
+
+R = ρ × L / A
+
+Where:
+  ρ = Resistivity of copper = 1.72×10⁻⁸ Ω·m at 20°C
+  L = Length (m)
+  A = Cross-sectional area (m²)
+
+Example:
+  100A trace, 50mm long, 4mm wide, 2 oz (70μm) copper
+
+  A = 4mm × 0.07mm = 0.28 mm² = 2.8×10⁻⁷ m²
+  L = 50mm = 0.05m
+
+  R = 1.72×10⁻⁸ × 0.05 / 2.8×10⁻⁷ = 3.07 mΩ
+
+  Voltage drop: V = I × R = 100 × 0.00307 = 0.307V
+  Power loss: P = I² × R = 100² × 0.00307 = 30.7W
+
+  → Significant loss in just 50mm of trace!
+```
+
+### 8.2 Low-Inductance Layout Techniques
+
+**Why Low Inductance Matters:**
+
+```
+Voltage spike during switching:
+
+ΔV = L × (di/dt)
+
+Example:
+  L = 50 nH (poor layout)
+  di/dt = 3000 A/μs (fast switching)
+
+  ΔV = 50n × 3000 A/μs = 150V spike!
+
+  With 400V DC bus → 550V total stress on MOSFET
+```
+
+**Loop Inductance Sources:**
+
+```
+Total loop inductance:
+  L_loop = L_trace + L_capacitor + L_MOSFET_package + L_via
+
+Typical values:
+  PCB trace (50mm, 0.2mm spacing): 20-40 nH
+  Electrolytic capacitor (leaded): 15-30 nH
+  Film capacitor (SMD): 5-10 nH
+  Ceramic capacitor (0805): 1-2 nH
+  MOSFET TO-247 package: 5-10 nH
+  Via (0.3mm): 0.5-1 nH each
+```
+
+**Target Inductance:**
+
+- Excellent: <20 nH total loop
+- Good: 20-50 nH
+- Acceptable: 50-100 nH
+- Poor: >100 nH (expect significant overshoot)
+
+**Technique 1: Minimize Loop Area**
+
+```
+Power loop: DC+ → MOSFET → DC-
+
+Bad layout (large loop):
+        DC+  ═════════════  (top layer)
+         │
+         │ (long distance)
+         ↓
+       MOSFET
+         │
+         │ (long distance)
+         ↓
+        DC-  ═════════════  (bottom layer)
+
+Loop area: 50mm × 20mm = 1000 mm²
+L ≈ 50-100 nH
+
+Good layout (small loop):
+        DC+  ═════  (top layer, directly above DC-)
+         │
+        MOSFET (between planes)
+         │
+        DC-  ═════  (bottom layer, directly below DC+)
+
+Loop area: 10mm × 0.5mm = 5 mm²
+L ≈ 10-20 nH
+```
+
+**Technique 2: Use Power Planes**
+
+```
+4-layer stackup:
+  Layer 1 (Top): Signal, components
+  Layer 2: DC+ power plane (solid copper)
+  Layer 3: DC- power plane (solid copper)
+  Layer 4 (Bottom): Signal, components
+
+Advantages:
+  - Minimum separation between DC+ and DC- (plane spacing)
+  - Maximum capacitance (planes act as distributed capacitor)
+  - Lowest inductance (<10 nH achievable)
+  - Excellent for high power (>5kW)
+
+DC link capacitors connect directly between layer 2 and layer 3
+```
+
+**Technique 3: Wide, Short Traces**
+
+```
+Trace inductance (approximate):
+
+L = 0.2 × length × [ln(2 × length / (width + thickness)) + 0.5]
+
+(L in nH, dimensions in mm)
+
+Example:
+  50mm long trace, 1mm wide, 0.035mm thick (1 oz)
+  L = 0.2 × 50 × [ln(2 × 50 / 1.035) + 0.5]
+  L = 10 × [ln(96.6) + 0.5]
+  L = 10 × [4.57 + 0.5]
+  L = 50.7 nH
+
+  Same trace, 10mm wide:
+  L = 0.2 × 50 × [ln(2 × 50 / 10.035) + 0.5]
+  L = 10 × [ln(9.97) + 0.5]
+  L = 10 × [2.30 + 0.5]
+  L = 28 nH
+
+  Width increased 10×, inductance reduced ~45%
+```
+
+**Technique 4: Parallel Return Path**
+
+```
+Use adjacent ground/power plane as return path:
+
+Signal trace on top layer
+↓
+Ground plane immediately below (layer 2)
+
+Return current flows in ground plane directly under signal trace
+Minimizes loop area → minimizes inductance
+```
+
+**Technique 5: DC Link Capacitor Placement**
+
+```
+Critical: Place DC link capacitors as close to MOSFETs as possible
+
+Best: <10mm from MOSFET drain/source pins
+Good: 10-20mm
+Poor: >20mm
+
+Multiple smaller capacitors better than one large capacitor:
+  - Place several ceramic caps (0.1-1μF) directly at each MOSFET
+  - Film caps (1-10μF) nearby for medium frequency
+  - Bulk electrolytic (100-1000μF) for low frequency ripple
+
+Example:
+  Each MOSFET leg (high-side + low-side):
+    - 2× 1μF ceramic (X7R, 0805) within 5mm
+    - 1× 10μF film cap within 15mm
+    - Shared bulk caps (470μF) within 50mm
+```
+
+**Technique 6: Multi-Point Grounding**
+
+```
+For high current grounds:
+
+Bad: Single ground return point (creates ground loops)
+Good: Star ground from each phase
+Best: Ground plane (distributed ground, lowest impedance)
+
+Via stitching:
+  - Place many vias connecting top ground to bottom ground
+  - Spacing: 5-10mm grid
+  - Purpose: Minimize ground plane impedance
+```
+
+### 8.3 Power Loop Minimization
+
+**Identifying the Critical Power Loop:**
+
+```
+High-frequency switching loop (most critical):
+
+DC+ cap → High-side MOSFET drain → MOSFET source →
+Low-side MOSFET drain → Low-side source → DC- cap → back to DC+ cap
+
+This loop switches at PWM frequency with high di/dt
+Minimize THIS loop first!
+```
+
+**Power Loop Layout Strategy:**
+
+```
+Step 1: Place components to minimize loop
+
+Optimal placement:
+        DC+ Cap
+           │
+           │ (short)
+           ↓
+        Q1 (High-side)
+           │
+           ├─→ Phase output (to motor)
+           │
+        Q2 (Low-side)
+           │
+           │ (short)
+           ↓
+        DC- Cap
+
+Keep loop height <20mm for good performance
+```
+
+**Step 2: Route Power Traces**
+
+```
+Priority order:
+1. DC+ to high-side drain (widest, shortest)
+2. High-side source to low-side drain (phase node, widest)
+3. Low-side source to DC- (widest, shortest)
+4. Decoupling caps across DC+ and DC-
+
+All traces should be on same side of board when possible
+Use multiple layers in parallel for very high current
+```
+
+**Step 3: Gate Drive Routing (Secondary Priority)**
+
+```
+Gate drive loop is less critical (lower current, slower edges)
+
+But still important:
+- Keep gate traces <50mm
+- Route away from drain nodes (avoid coupling)
+- Use dedicated gate driver ground return (Kelvin connection)
+```
+
+**Layout Checklist for Power Loop:**
+
+✓ DC link capacitors within 10mm of MOSFETs
+✓ Power loop area <100 mm²
+✓ Estimated loop inductance <50 nH
+✓ High-current vias properly arrayed (50+ vias for 100A)
+✓ Thermal vias under MOSFETs (50-100 vias per device)
+✓ No acute angles in power traces (45° minimum)
+✓ Power traces not crossing signal traces
+✓ Symmetrical layout for all three phases
+
+### 8.4 Gate Drive Layout Best Practices
+
+**Gate Drive Loop:**
+
+```
+The gate drive circuit creates its own loop:
+
+Gate driver output → Rg → MOSFET gate → MOSFET source →
+Driver ground return → back to driver output
+
+Keep this loop small (<25mm length ideal)
+```
+
+**Critical Layout Rules:**
+
+1. **Separate Power and Signal Grounds**:
+   ```
+   Bad: Common ground for gate driver and power MOSFET
+
+   Power Ground ════════════ (high di/dt, noisy)
+        │
+        └── Gate Driver GND (couples noise into driver!)
+
+   Good: Kelvin (star) ground connection
+
+   Power Ground ═══════════ (MOSFET source, high current)
+        │
+        │ (single point connection)
+        │
+   Gate Driver GND ───────── (separate trace back to driver)
+   ```
+
+2. **Gate Trace Routing**:
+   ```
+   - Keep gate traces short (<50mm)
+   - Route on inner layers when possible (shielded by ground planes)
+   - Never cross drain traces (high dv/dt couples to gate)
+   - Use ground guard traces if crossing necessary
+   - Maintain constant trace width (avoid impedance changes)
+   ```
+
+3. **Gate Resistor Placement**:
+   ```
+   Place Rg as close to MOSFET gate as possible (<5mm)
+
+   Driver ──→ (long trace OK) ──→ Rg ──→ (short!) ──→ Gate
+
+   NOT:
+   Driver ──→ Rg ──→ (long trace BAD) ──→ Gate
+
+   Reason: Rg dampens ringing; must be close to gate
+   ```
+
+4. **Miller Clamp Circuit** (for SiC or high-power):
+   ```
+   Gate ──┬── to MOSFET gate
+          │
+         Rmc (5-10kΩ)
+          │
+        Source
+
+   Purpose: Prevent false turn-on from dv/dt
+   Place Rmc within 10mm of gate pin
+   ```
+
+5. **Bypass Capacitors for Gate Drivers**:
+   ```
+   Each gate driver IC needs:
+   - 100nF ceramic cap within 5mm of VCC pin
+   - 10μF ceramic/tantalum within 20mm
+   - Connected to driver ground, NOT power ground
+
+   Purpose: Provide peak gate current during switching
+   ```
+
+**High-Side Driver Bootstrap Layout:**
+
+```
+For bootstrap drivers (e.g., IR2110):
+
+Bootstrap components placement:
+  1. Bootstrap diode close to VCC pin (driver supply)
+  2. Bootstrap capacitor between VS and VB pins (<10mm)
+  3. Use ceramic cap for bootstrap (low ESL)
+  4. Route bootstrap supply trace to avoid coupling
+
+Example:
+     +15V ──→ Dboot ──→ Cboot ──→ VB (floating supply)
+                 │         │
+                 └─────────┴──→ VS (source of high-side MOSFET)
+```
+
+**Isolated Driver Layout:**
+
+```
+For isolated drivers (magnetic or capacitive):
+
+- Keep isolation barrier clear (no traces crossing)
+- Separate grounds completely (power ground ≠ control ground)
+- Bypass caps on BOTH sides of isolation
+- Follow manufacturer creepage/clearance requirements
+```
+
+### 8.5 Grounding and Layer Stack-up
+
+**Grounding Strategy:**
+
+```
+Three separate ground systems (critical for noise immunity):
+
+1. Power Ground (PGND):
+   - High-current MOSFET sources
+   - DC link capacitor returns
+   - Shunt resistor grounds
+   - Heavy copper, low impedance
+
+2. Analog Ground (AGND):
+   - Current sense amplifiers
+   - Voltage sense circuits
+   - ADC reference grounds
+   - Quiet, low-noise ground
+
+3. Digital Ground (DGND):
+   - Microcontroller/DSP ground
+   - Gate driver control signals
+   - Communication interfaces
+   - Can tolerate some noise
+
+Connection strategy: Star ground at single point (usually near MCU)
+```
+
+**Star Ground Connection:**
+
+```
+                    Single Point Ground
+                           │
+         ┌─────────────────┼─────────────────┐
+         │                 │                 │
+       PGND              AGND              DGND
+    (Power GND)      (Analog GND)      (Digital GND)
+         │                 │                 │
+    MOSFETs,           Current           MCU, Gate
+    Shunts, Caps       Sensors            Drivers
+```
+
+**Layer Stack-up Options:**
+
+**2-Layer PCB** (Low cost, low power <5kW):
+```
+Layer 1 (Top): Components, signals, some power
+Layer 2 (Bottom): Ground plane, some power
+
+Pros: Lowest cost
+Cons: Limited current capacity, higher EMI, poor thermal
+
+Use for: Low-power applications (<5kW), prototypes, cost-sensitive
+```
+
+**4-Layer PCB** (Recommended for most applications):
+```
+Layer 1 (Top): Components, signals
+Layer 2: Ground plane (PGND + AGND + DGND)
+Layer 3: Power plane (DC+, DC-, phase outputs)
+Layer 4 (Bottom): Signals, some components
+
+Core thickness (L2-L3): 0.2-0.4mm (minimum for low inductance)
+
+Pros: Good EMI, low inductance, good thermal
+Cons: Moderate cost
+Use for: 5-50kW motor drives, production designs
+```
+
+**6-Layer PCB** (High performance, >20kW):
+```
+Layer 1 (Top): Components, signals
+Layer 2: Ground plane
+Layer 3: DC+ power plane
+Layer 4: DC- power plane
+Layer 5: Ground plane
+Layer 6 (Bottom): Components, signals
+
+Pros: Lowest inductance, best EMI, excellent thermal
+Cons: Highest cost
+Use for: High-power (>20kW), automotive, aerospace
+```
+
+**Copper Weight Selection:**
+
+| Layer | Function | Copper Weight | Notes |
+|-------|----------|---------------|-------|
+| L1 (Top) | Power traces | 2-4 oz | Heavy copper for high current |
+| L2 | Ground plane | 2 oz | Good compromise |
+| L3 | Power plane | 2 oz | Or 4 oz for very high power |
+| L4 (Bottom) | Signals | 1-2 oz | Standard weight sufficient |
+
+### 8.6 Component Placement Guidelines
+
+**General Placement Strategy:**
+
+```
+1. Power Stage (MOSFETs, DC caps):
+   - Center of board or one end
+   - Access to heatsink mounting area
+   - Keep three phases symmetrical
+
+2. Gate Drivers:
+   - Adjacent to MOSFETs
+   - <20mm from MOSFET gates
+
+3. Current Sensors:
+   - Near MOSFETs (low-side shunts)
+   - Or near phase outputs (inline shunts)
+
+4. Control Section (MCU):
+   - Separate area from power stage
+   - 50+ mm separation if possible
+   - Near connectors for programming/debug
+
+5. Connectors:
+   - Power input: One end of board
+   - Motor output: Adjacent to power stage
+   - Control signals: Near MCU
+```
+
+**Critical Placement Rules:**
+
+1. **MOSFET Orientation**:
+   ```
+   Orient all MOSFETs same direction for:
+   - Symmetrical thermal performance
+   - Easier heatsink mounting
+   - Consistent gate drive routing
+
+   Typical: Drain at top, source at bottom
+   ```
+
+2. **DC Link Capacitors**:
+   ```
+   Placement priority:
+   1st: Ceramic caps (0.1-1μF) - within 5mm of each MOSFET
+   2nd: Film caps (1-10μF) - within 20mm of power stage
+   3rd: Bulk electrolytics (100-1000μF) - within 50mm
+
+   Arrange in arrays for multiple devices
+   ```
+
+3. **Current Sense Amplifiers**:
+   ```
+   Place amplifiers close to shunt resistors:
+   - <10mm for best noise immunity
+   - Route sense traces as differential pair
+   - Ground plane underneath for shielding
+   - Keep away from switching nodes
+   ```
+
+4. **Heat Management**:
+   ```
+   - Space high-power components 10+ mm apart
+   - Provide thermal relief to heatsink
+   - Keep temperature-sensitive components (MCU, sensors) away
+   - Consider airflow direction in placement
+   ```
+
+5. **Test Points**:
+   ```
+   Add test points for critical signals:
+   - Phase voltages (one per phase)
+   - DC bus voltage
+   - Gate drive signals
+   - Current sense outputs
+   - Ground references
+
+   Place accessible but away from high-voltage
+   ```
+
+**Clearance Requirements (High Voltage):**
+
+For 400V DC system:
+- Conductor-to-conductor (same potential): 0.5mm minimum
+- High voltage to low voltage: 3mm minimum (IPC-2221)
+- High voltage to board edge: 5mm minimum
+- Creepage distance: 5mm minimum (varies by standard)
+- Clearance through air: 3mm minimum
+
+---
+
+### References for Section 8:
+
+**Standards:**
+1. **IPC-2221**: Generic Standard on Printed Board Design
+2. **IPC-2152**: Standard for Determining Current Carrying Capacity in Printed Board Design
+3. **IEC 61800-5-1**: Safety requirements for adjustable speed electrical power drive systems
+
+**Application Notes:**
+1. **Texas Instruments**: "PCB Layout Guidelines for Motor Drives" (SLVA959)
+2. **Infineon**: "PCB Design for Motor Control Applications" (AN2016-10)
+3. **ON Semiconductor**: "High Current PCB Design" (AND9156/D)
+4. **STMicroelectronics**: "Motor Control PCB Layout Techniques" (AN4660)
+5. **Analog Devices**: "Grounding in Mixed-Signal Systems" (MT-031)
+
+**Books:**
+1. *"High-Speed Digital Design: A Handbook of Black Magic"* by Howard Johnson - Chapters on PCB layout
+2. *"PCB Design for Real-World EMI Control"* by Bruce Archambeault
+3. *"Printed Circuit Board Design Techniques for EMC Compliance"* by Mark Montrose
+
+**Videos:**
+1. **Altium Academy**: "PCB Layout for Power Electronics" (YouTube series)
+2. **Texas Instruments**: "Power Stage PCB Layout Best Practices" (YouTube)
+3. **Rick Hartley**: "Fundamentals of PCB Layout" (YouTube - highly recommended!)
+
+**Design Tools:**
+1. **Altium Designer**: Professional PCB design software
+2. **KiCad**: Open-source PCB design (free, very capable)
+3. **EAGLE**: Popular for hobbyist/small projects
+4. **Saturn PCB Design Toolkit**: Free trace width/impedance calculator
+
+---
+
