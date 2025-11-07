@@ -2299,3 +2299,1039 @@ float calculate_speed(void) {
 
 *End of Section 4 - Position Sensors*
 
+---
+
+## 5. Mathematical Transformations - Detailed Derivations
+
+Now that we understand reference frames conceptually, let's dive into the mathematical details of the transformations that make FOC possible.
+
+### 5.1 The Clarke Transformation (abc → αβ)
+
+#### 5.1.1 Derivation from First Principles
+
+**Goal:** Transform three-phase balanced quantities into two-phase orthogonal quantities while preserving physical relationships.
+
+**Starting Point:**
+
+Three-phase balanced system:
+```
+ia + ib + ic = 0  (Kirchhoff's Current Law for balanced system)
+
+ia(t) = I·cos(ωt)
+ib(t) = I·cos(ωt - 120°)
+ic(t) = I·cos(ωt - 240°)
+```
+
+**Geometric Approach:**
+
+Imagine the three phase windings as unit vectors in 2D space:
+
+```
+Phase A: axis at 0°
+Phase B: axis at 120°
+Phase C: axis at 240°
+```
+
+Unit vectors:
+```
+a⃗ = [1, 0]ᵀ
+b⃗ = [cos(120°), sin(120°)]ᵀ = [-1/2, √3/2]ᵀ
+c⃗ = [cos(240°), sin(240°)]ᵀ = [-1/2, -√3/2]ᵀ
+```
+
+**Resultant vector:**
+```
+i⃗_αβ = ia·a⃗ + ib·b⃗ + ic·c⃗
+
+iα = ia·1 + ib·(-1/2) + ic·(-1/2)
+iβ = ia·0 + ib·(√3/2) + ic·(-√3/2)
+```
+
+**Normalization:**
+
+To preserve power/amplitude, multiply by 2/3:
+
+```
+iα = (2/3)·[ia - (1/2)ib - (1/2)ic]
+iβ = (2/3)·[(√3/2)ib - (√3/2)ic]
+```
+
+Simplified:
+```
+iα = (2/3)·[ia - (1/2)(ib + ic)]
+iβ = (2/3)·(√3/2)·(ib - ic)
+```
+
+Using ia + ib + ic = 0, we get ib + ic = -ia:
+```
+iα = (2/3)·[ia + (1/2)ia] = (2/3)·(3/2)ia = ia  (for balanced system)
+```
+
+**Matrix Form:**
+
+```
+[iα]     2   [  1      -1/2     -1/2   ] [ia]
+[iβ] = ───── [  0     √3/2    -√3/2   ] [ib]
+[i0]     3   [ 1/2      1/2      1/2   ] [ic]
+```
+
+For balanced systems, i0 (zero-sequence) = 0, so we only need α and β.
+
+#### 5.1.2 Power Invariant vs Amplitude Invariant Forms
+
+**Two common normalizations exist:**
+
+**1. Power Invariant (we use this):**
+```
+K = 2/3
+
+[iα]     2   [  1      -1/2     -1/2   ] [ia]
+[iβ] = ───── [  0     √3/2    -√3/2   ] [ib]
+       3                                  [ic]
+```
+
+**Properties:**
+- Power in abc = Power in αβ
+- |i_αβ| = |i_abc| (magnitude preserved)
+- Used in most FOC implementations
+
+**2. Amplitude Invariant:**
+```
+K = √(2/3)
+
+[iα]         [  1      -1/2     -1/2   ] [ia]
+[iβ] = √(2/3) [  0     √3/2    -√3/2   ] [ib]
+                                          [ic]
+```
+
+**Properties:**
+- Peak αβ values = peak abc values
+- Power NOT preserved (factor of 2/3)
+- Sometimes used in theoretical analysis
+
+**We use power-invariant form throughout this handbook.**
+
+#### 5.1.3 Inverse Clarke Transformation
+
+To go back from αβ to abc:
+
+**Derivation:**
+
+We need to project the αβ vector back onto the three phase axes.
+
+```
+ia = iα·cos(0°) + iβ·sin(0°) = iα
+
+ib = iα·cos(120°) + iβ·sin(120°)
+   = iα·(-1/2) + iβ·(√3/2)
+   = -(1/2)iα + (√3/2)iβ
+
+ic = iα·cos(240°) + iβ·sin(240°)
+   = iα·(-1/2) + iβ·(-√3/2)
+   = -(1/2)iα - (√3/2)iβ
+```
+
+**Matrix Form:**
+```
+[ia]   [    1         0    ] [iα]
+[ib] = [ -1/2      √3/2    ] [iβ]
+[ic]   [ -1/2     -√3/2    ]
+```
+
+**Verification:**
+ia + ib + ic = 1·iα + (-1/2)iα + (-1/2)iα + 0 + (√3/2)iβ + (-√3/2)iβ = 0 ✓
+
+### 5.2 The Park Transformation (αβ → dq)
+
+#### 5.2.1 Derivation as Rotation Matrix
+
+**Goal:** Rotate the αβ frame by angle θ to align with the rotor.
+
+**Standard 2D Rotation:**
+
+To rotate a vector by angle θ clockwise:
+```
+[x']   [ cos(θ)   sin(θ)] [x]
+[y'] = [-sin(θ)   cos(θ)] [y]
+```
+
+**For Park Transformation:**
+
+We want to rotate the αβ frame to align with the rotor at electrical angle θe:
+
+```
+[id]   [ cos(θe)   sin(θe)] [iα]
+[iq] = [-sin(θe)   cos(θe)] [iβ]
+```
+
+**Physical Interpretation:**
+
+- **id:** Component of current aligned with d-axis (rotor flux direction)
+- **iq:** Component of current aligned with q-axis (perpendicular to rotor flux)
+
+When θe = 0 (rotor aligned with α-axis):
+```
+id = iα,  iq = -iβ
+```
+
+When θe = 90° (rotor aligned with β-axis):
+```
+id = iβ,  iq = iα
+```
+
+#### 5.2.2 Expanded Form
+
+```
+id = iα·cos(θe) + iβ·sin(θe)
+iq = -iα·sin(θe) + iβ·cos(θe)
+```
+
+**Why the negative sign on iq?**
+
+By convention, we define q-axis as 90° **ahead** of d-axis in the direction of rotation. The negative sign in the transformation ensures this orientation.
+
+Alternative convention (some textbooks):
+```
+id = iα·cos(θe) + iβ·sin(θe)
+iq = iα·sin(θe) - iβ·cos(θe)  (different sign convention)
+```
+
+Both work, but sign affects how we interpret iq (motoring vs generating). We use the first convention.
+
+#### 5.2.3 Inverse Park Transformation
+
+To rotate back from dq to αβ:
+
+```
+[iα]   [ cos(θe)  -sin(θe)] [id]
+[iβ] = [ sin(θe)   cos(θe)] [iq]
+```
+
+Expanded:
+```
+iα = id·cos(θe) - iq·sin(θe)
+iβ = id·sin(θe) + iq·cos(θe)
+```
+
+**Verification (Round-trip):**
+
+Starting with (id, iq), apply inverse Park, then Park:
+
+```
+iα = id·cos(θe) - iq·sin(θe)
+iβ = id·sin(θe) + iq·cos(θe)
+
+id' = iα·cos(θe) + iβ·sin(θe)
+    = (id·cos²(θe) - iq·sin(θe)cos(θe)) + (id·sin²(θe) + iq·sin(θe)cos(θe))
+    = id·(cos²(θe) + sin²(θe)) + iq·(sin(θe)cos(θe) - sin(θe)cos(θe))
+    = id ✓
+
+iq' = -iα·sin(θe) + iβ·cos(θe)
+    = -(id·cos(θe)sin(θe) - iq·sin²(θe)) + (id·sin(θe)cos(θe) + iq·cos²(θe))
+    = iq·(sin²(θe) + cos²(θe)) + id·(-cos(θe)sin(θe) + sin(θe)cos(θe))
+    = iq ✓
+```
+
+### 5.3 Complete Transformation Chain
+
+#### 5.3.1 abc → dq (Forward)
+
+Combining Clarke and Park:
+
+```
+Step 1: [iα, iβ] = Clarke(ia, ib, ic)
+Step 2: [id, iq] = Park(iα, iβ, θe)
+```
+
+**Combined Matrix:**
+```
+[id]     2   [ cos(θe)   cos(θe-120°)   cos(θe-240°)] [ia]
+[iq] = ───── [-sin(θe)  -sin(θe-120°)  -sin(θe-240°)] [ib]
+       3                                                [ic]
+```
+
+This is rarely used directly; we compute Clarke then Park separately for clarity.
+
+#### 5.3.2 dq → abc (Reverse)
+
+```
+Step 1: [vα, vβ] = InvPark(vd, vq, θe)
+Step 2: [va, vb, vc] = InvClarke(vα, vβ)
+```
+
+**Combined Matrix:**
+```
+[va]   [   cos(θe)     -sin(θe)  ] [vd]
+[vb] = [ cos(θe-120°) -sin(θe-120°)] [vq]
+[vc]   [ cos(θe-240°) -sin(θe-240°)]
+```
+
+### 5.4 Space Vector Pulse Width Modulation (SVPWM)
+
+#### 5.4.1 Voltage Space Vectors
+
+**The 8 Basic Vectors:**
+
+A three-phase inverter has 2³ = 8 possible switching states:
+
+| State | Sa | Sb | Sc | Vα | Vβ | Name | Sector |
+|-------|----|----|----|----|----|----|--------|
+| V0 | 0 | 0 | 0 | 0 | 0 | Zero | - |
+| V1 | 1 | 0 | 0 | 2Vdc/3 | 0 | Active | 1 |
+| V2 | 1 | 1 | 0 | Vdc/3 | Vdc/√3 | Active | 2 |
+| V3 | 0 | 1 | 0 | -Vdc/3 | Vdc/√3 | Active | 3 |
+| V4 | 0 | 1 | 1 | -2Vdc/3 | 0 | Active | 4 |
+| V5 | 0 | 0 | 1 | -Vdc/3 | -Vdc/√3 | Active | 5 |
+| V6 | 1 | 0 | 1 | Vdc/3 | -Vdc/√3 | Active | 6 |
+| V7 | 1 | 1 | 1 | 0 | 0 | Zero | - |
+
+**Visualization:**
+```
+         V3 (010)
+          ╱ ↑ ╲
+    V4 ──╱──┼──╲── V2
+   (011) ╲  │  ╱ (110)
+          ╲ │ ╱
+     ───────┼───────V1 (100)
+            │╲
+            │ ╲
+      V5    │  ╲ V6
+     (001)  ↓  (101)
+```
+
+**Maximum Voltage Circle:**
+
+The largest circle that fits inside the hexagon has radius:
+```
+V_max = Vdc / √3 ≈ 0.577·Vdc
+```
+
+This is 15% larger than the maximum achievable with sinusoidal PWM!
+
+#### 5.4.2 SVPWM Algorithm
+
+**Goal:** Synthesize desired voltage vector V* using adjacent vectors and zero vectors.
+
+**For reference voltage (Vα*, Vβ*):**
+
+1. **Determine Sector:**
+```
+θ = atan2(Vβ*, Vα*)
+sector = floor(θ / (π/3)) + 1
+```
+
+2. **Calculate angle within sector:**
+```
+θ_sector = θ - (sector-1)·(π/3)
+```
+
+3. **Calculate duty cycles for adjacent vectors:**
+
+For sector 1 (using V1 and V2):
+```
+T1 = m·Ts·sin(π/3 - θ_sector) / sin(π/3)
+T2 = m·Ts·sin(θ_sector) / sin(π/3)
+T0 = Ts - T1 - T2
+
+where m = |V*| / V_max  (modulation index)
+```
+
+4. **Map to three-phase duty cycles:**
+
+Using centered PWM (symmetric placement of zero vectors):
+
+**Sector 1:**
+```
+Ta = (T1 + T2 + T0/2) / Ts
+Tb = (T2 + T0/2) / Ts
+Tc = (T0/2) / Ts
+```
+
+**General formula for sector n:**
+Pattern rotates through sectors following switching sequence for minimum switching losses.
+
+#### 5.4.3 SVPWM vs Sinusoidal PWM
+
+**Sinusoidal PWM:**
+```
+ma = M·sin(ωt)
+mb = M·sin(ωt - 120°)
+mc = M·sin(ωt - 240°)
+
+V_max = M·Vdc/2  (for M ≤ 1)
+```
+
+**SVPWM:**
+```
+V_max = Vdc/√3 = 0.577·Vdc
+```
+
+**Comparison:**
+```
+SVPWM advantage = 0.577/(0.5) = 1.15 = 15% more voltage
+```
+
+**Why SVPWM is better:**
+- Higher DC bus utilization
+- Lower harmonic distortion
+- Better suited for digital implementation
+- Optimal switching sequence (fewer transitions)
+
+### 5.5 Implementation Considerations
+
+#### 5.5.1 Computational Efficiency
+
+**Trig Function Approximations:**
+
+For real-time systems, sin/cos calculations can be expensive.
+
+**Options:**
+
+1. **Lookup Tables:**
+```c
+// Pre-calculated table (e.g., 360 entries for 1° resolution)
+const float sin_table[360] = {...};
+const float cos_table[360] = {...};
+
+float sin_lookup(float angle_deg) {
+    int index = ((int)angle_deg) % 360;
+    return sin_table[index];
+}
+```
+
+2. **CORDIC Algorithm:**
+- Iterative approximation
+- Only uses shifts and adds
+- Hardware-friendly
+- ~10-15 iterations for good precision
+
+3. **Taylor Series Approximation:**
+```
+sin(x) ≈ x - x³/6 + x⁵/120  (for small x near 0)
+cos(x) ≈ 1 - x²/2 + x⁴/24
+```
+
+4. **Hardware Acceleration:**
+- ARM Cortex-M4F: Hardware FPU with sin/cos
+- DSP processors: Dedicated trig units
+- Modern MCUs: 1-2 cycles for trig functions
+
+#### 5.5.2 Fixed-Point vs Floating-Point
+
+**Floating-Point (recommended for modern MCUs):**
+```c
+float clarke_alpha = (2.0f/3.0f) * (ia - 0.5f*ib - 0.5f*ic);
+float clarke_beta = (2.0f/3.0f) * (0.866f) * (ib - ic);  // 0.866 ≈ √3/2
+```
+
+**Fixed-Point (for embedded without FPU):**
+```c
+// Q15 format: 16-bit signed, 15 fractional bits
+#define Q15(x) ((int16_t)((x) * 32768.0f))
+
+int16_t TWO_THIRDS_Q15 = Q15(2.0/3.0);   // 21845
+int16_t SQRT3_2_Q15 = Q15(0.866);        // 28378
+
+int16_t clarke_alpha_q15 = (TWO_THIRDS_Q15 * (ia - ((ib + ic) >> 1))) >> 15;
+```
+
+#### 5.5.3 Saturation and Limiting
+
+**Voltage Limits:**
+
+After inverse transformations, ensure voltages don't exceed hardware limits:
+
+```c
+// After inverse Clarke
+float v_magnitude = sqrtf(v_alpha*v_alpha + v_beta*v_beta);
+float v_max = vdc / sqrtf(3.0f);
+
+if (v_magnitude > v_max) {
+    // Scale down proportionally
+    float scale = v_max / v_magnitude;
+    v_alpha *= scale;
+    v_beta *= scale;
+}
+```
+
+### 5.6 Worked Examples
+
+#### Example 5.1: Complete Transformation
+
+**Given:**
+- Three-phase currents at t=0
+- ia = 10A, ib = -5A, ic = -5A
+- Rotor position: θe = 45°
+- Calculate id and iq
+
+**Solution:**
+
+**Step 1: Clarke Transformation**
+```
+iα = (2/3)·[10 - 0.5·(-5) - 0.5·(-5)]
+   = (2/3)·[10 + 2.5 + 2.5]
+   = (2/3)·15
+   = 10 A
+
+iβ = (2/3)·(√3/2)·[(-5) - (-5)]
+   = (2/3)·(0.866)·0
+   = 0 A
+```
+
+**Step 2: Park Transformation with θe = 45°**
+```
+id = iα·cos(45°) + iβ·sin(45°)
+   = 10·(0.707) + 0·(0.707)
+   = 7.07 A
+
+iq = -iα·sin(45°) + iβ·cos(45°)
+   = -10·(0.707) + 0·(0.707)
+   = -7.07 A
+```
+
+**Interpretation:**
+- Magnitude: √(id² + iq²) = √(50 + 50) = 10 A ✓ (conserved)
+- Torque: T = Kt·iq = Kt·(-7.07) → Negative torque (generating/braking)
+- Flux component: id = 7.07 A (non-zero d-axis current)
+
+#### Example 5.2: SVPWM Duty Cycle Calculation
+
+**Given:**
+- Desired voltage: Vα* = 12V, Vβ* = 8V
+- DC bus: Vdc = 28V
+- PWM period: Ts = 100µs
+
+**Solution:**
+
+**Step 1: Calculate magnitude and angle**
+```
+|V*| = √(12² + 8²) = √(144 + 64) = 14.42 V
+
+θ = atan2(8, 12) = 33.69° = 0.588 rad
+```
+
+**Step 2: Determine sector**
+```
+sector = floor(33.69° / 60°) + 1 = 1
+```
+
+**Step 3: Angle within sector**
+```
+θ_sector = 33.69° - 0° = 33.69° = 0.588 rad
+```
+
+**Step 4: Modulation index**
+```
+V_max = 28 / √3 = 16.17 V
+m = 14.42 / 16.17 = 0.892
+```
+
+**Step 5: Calculate T1, T2, T0**
+```
+T1 = 0.892 × 100µs × sin(60° - 33.69°) / sin(60°)
+   = 89.2µs × sin(26.31°) / 0.866
+   = 89.2µs × 0.444 / 0.866
+   = 45.75 µs
+
+T2 = 0.892 × 100µs × sin(33.69°) / sin(60°)
+   = 89.2µs × 0.555 / 0.866
+   = 57.17 µs
+
+T0 = 100µs - 45.75µs - 57.17µs = -2.92 µs ≈ 0
+```
+
+(Small negative value due to rounding; set to 0 in practice)
+
+**Step 6: Duty cycles (Sector 1)**
+```
+Ta = (T1 + T2 + T0/2) / Ts = (45.75 + 57.17 + 0) / 100 = 1.029 ≈ 1.0
+Tb = (T2 + T0/2) / Ts = (57.17 + 0) / 100 = 0.572
+Tc = (T0/2) / Ts = 0 / 100 = 0
+```
+
+**Note:** Ta slightly exceeds 1.0 due to rounding. In practice, all duties would be scaled to fit [0, 1].
+
+### 5.7 Key Takeaways - Mathematical Transformations
+
+1. **Clarke reduces variables:** 3-phase abc → 2-phase αβ (exploit balanced system constraint)
+
+2. **Park aligns with rotor:** αβ (stationary) → dq (rotating), making AC quantities appear DC
+
+3. **Power is conserved:** Using 2/3 normalization ensures |i_abc| = |i_αβ| = |i_dq|
+
+4. **Transformations are reversible:** Can go back and forth without information loss
+
+5. **SVPWM is optimal:** 15% better voltage utilization than sinusoidal PWM
+
+6. **Implementation tradeoffs:** Trig functions vs tables vs approximations
+
+7. **Saturation must be handled:** Voltage requests can exceed hardware capability
+
+### 5.8 Further Study - Mathematical Transformations
+
+**Books:**
+1. **"Power Electronics and Motor Drives"** by Bimal K. Bose
+   - Chapter 6: Space Vector PWM
+   - Detailed SVPWM implementation
+
+2. **"Advanced Electric Drives"** by Rik De Doncker
+   - Appendix A: Mathematical Transformations
+   - Rigorous derivations
+
+3. **"Vector Control and Dynamics of AC Drives"** by Novotny & Lipo
+   - Chapter 4: Reference Frame Theory
+   - The classic treatment
+
+**Application Notes:**
+1. **Texas Instruments:** "Clarke & Park Transforms on C2000" (SPRAAA3)
+2. **STMicroelectronics:** "SVPWM Generation" (AN4776)
+3. **Microchip:** "Space Vector Modulation" (AN908)
+
+**Papers:**
+1. **"Generalised Theory of Direct Torque Control for AC Drives"** by Habetler et al.
+2. **"Modeling and Analysis of Space Vector Modulation"** by Holtz
+
+**Videos:**
+1. **MATLAB:** "Understanding Clarke and Park Transforms"
+2. **Texas Instruments:** "Introduction to Space Vector PWM"
+
+**Interactive Tools:**
+1. **PLECS Demo:** SVPWM visualization
+2. **Simulink:** Power Electronics Blockset examples
+3. **Python/Jupyter:** Transformation visualizations
+
+---
+
+*End of Section 5 - Mathematical Transformations*
+
+---
+
+## Section 6: Field Oriented Control (FOC) Theory
+
+### Introduction
+
+Field Oriented Control (FOC), also known as **vector control**, is the revolutionary control strategy that transformed AC motor drives in the 1970s and 1980s. Before FOC, AC motors were difficult to control precisely - they had sluggish torque response and couldn't match the performance of DC motors. FOC changed everything by making an AC motor behave like a separately-excited DC motor.
+
+**The FOC breakthrough:** By transforming AC motor variables into the rotating dq reference frame and controlling them independently, we can achieve:
+- Instantaneous torque control (like a DC motor)
+- Decoupled flux and torque control
+- Maximum efficiency operation
+- Fast dynamic response (millisecond-level torque changes)
+- Wide speed range with field weakening
+
+This section explains **how FOC works**, **why it works**, and **how to implement it** for PMSM motors. We'll build from conceptual understanding to practical implementation details.
+
+### 6.1 FOC Algorithm Overview - The Big Picture
+
+#### 6.1.1 The FOC Block Diagram
+
+Let's start with the complete FOC system and understand each block:
+
+```
+Reference Inputs                    Measured Feedback
+  ω_ref (speed)                     θe (rotor position)
+  τ_ref (torque)                    ia, ib, ic (phase currents)
+       ↓                                      ↓
+┌──────────────────────────────────────────────────────────────┐
+│                     FOC CONTROLLER                            │
+│                                                               │
+│  ┌─────────────┐         ┌──────────────┐                   │
+│  │   Speed     │  i*q    │   Current    │  V*d, V*q         │
+│  │ Controller  │────────→│  Controller  │────────┐          │
+│  │   (PI)      │         │   (2×PI)     │        │          │
+│  └─────────────┘         └──────────────┘        │          │
+│        ↑                        ↑                 │          │
+│        │ ω_measured             │ id, iq          ↓          │
+│        │                        │          ┌────────────┐    │
+│        │                 ┌──────┴──────┐   │  Inverse   │    │
+│        │                 │    Park     │   │   Park     │    │
+│        │                 │ Transform   │   │ Transform  │    │
+│        │                 │  (αβ→dq)    │   │  (dq→αβ)   │    │
+│        │                 └──────────────┘   └────────────┘    │
+│        │                        ↑                 │          │
+│        │                  iα, iβ│                 │ Vα, Vβ   │
+│        │                 ┌──────┴──────┐          ↓          │
+│        │                 │   Clarke    │    ┌──────────┐    │
+│        │                 │ Transform   │    │  SVPWM   │    │
+│        │                 │  (abc→αβ)   │    │          │    │
+│        │                 └─────────────┘    └──────────┘    │
+│        │                        ↑                 │          │
+└────────┼────────────────────────┼─────────────────┼──────────┘
+         │                        │                 │
+         │                    ia,ib,ic          Ta,Tb,Tc
+         │                        │             (duty cycles)
+         │                        ↓                 ↓
+      ┌──┴────┐           ┌─────────────┐   ┌─────────────┐
+      │ Speed │           │   Current   │   │  3-Phase    │
+      │ Calc  │           │   Sensors   │   │  Inverter   │
+      └───────┘           └─────────────┘   └─────────────┘
+         ↑                        ↑                 │
+         │                        │                 ↓
+      ┌──┴────────────────────────┴────────────────────┐
+      │              PMSM MOTOR                        │
+      │         (electromagnetic torque                │
+      │          drives mechanical load)                │
+      └────────────────────────────────────────────────┘
+               ↑
+         Position Sensor
+         (Hall/Encoder)
+```
+
+#### 6.1.2 Information Flow in FOC
+
+Let's trace the information flow through the system:
+
+**Forward Path (Command to Motor):**
+
+1. **Speed Reference** → Speed PI controller → **Torque command (i*q)**
+2. **Torque command** → Current PI controller → **Voltage command in dq (V*d, V*q)**
+3. **dq voltages** → Inverse Park transform (using θe) → **αβ voltages (V*α, V*β)**
+4. **αβ voltages** → SVPWM → **PWM duty cycles (Ta, Tb, Tc)**
+5. **Duty cycles** → Gate drivers → **Inverter** → **3-phase voltages (Va, Vb, Vc)**
+6. **3-phase voltages** → **Motor** → **Electromagnetic torque** → **Mechanical rotation**
+
+**Feedback Path (Sensing and Transformation):**
+
+1. **Motor rotation** → Position sensor → **Rotor angle (θe)**
+2. **Phase currents** → ADC → **Digital values (ia, ib, ic)**
+3. **abc currents** → Clarke transform → **αβ currents (iα, iβ)**
+4. **αβ currents** → Park transform (using θe) → **dq currents (id, iq)**
+5. **dq currents** → Current controllers → Close current loop
+6. **Rotor angle** → Speed calculation → **Measured speed (ω_measured)**
+7. **Measured speed** → Speed controller → Close speed loop
+
+**Key Observations:**
+
+- **Two control loops:** Outer speed loop (slow, ~1 kHz) and inner current loop (fast, ~10-20 kHz)
+- **Transformations are bidirectional:** Forward path uses inverse Park/Clarke; feedback uses Clarke/Park
+- **Position is critical:** θe is needed for Park/inverse Park transforms
+- **Everything happens in dq:** Control laws operate on DC quantities (id, iq)
+
+#### 6.1.3 Cascade Control Architecture
+
+FOC uses a **cascade control structure** with two loops:
+
+**Inner Loop - Current Control:**
+- **Objective:** Force id and iq to track their references (i*d, i*q)
+- **Sample rate:** Fast (10-20 kHz, matches PWM frequency)
+- **Bandwidth:** High (~1 kHz, limited by electrical time constant)
+- **Controller:** Two PI controllers (one for d-axis, one for q-axis)
+- **Time constant:** τ_elec = Ld/Rs ≈ 1-5 ms for typical PMSMs
+
+**Outer Loop - Speed Control:**
+- **Objective:** Force speed ω to track reference ω_ref
+- **Sample rate:** Slower (1-5 kHz)
+- **Bandwidth:** Lower (~50-200 Hz, limited by mechanical time constant)
+- **Controller:** One PI controller
+- **Time constant:** τ_mech = J/B ≈ 20-200 ms for typical systems
+
+**Why cascade control?**
+
+1. **Separation of timescales:** Electrical dynamics (ms) are much faster than mechanical dynamics (tens of ms)
+2. **Current limiting:** Inner loop can enforce current limits for motor protection
+3. **Improved disturbance rejection:** Inner loop rejects electrical disturbances before they affect speed
+4. **Simplified tuning:** Can tune loops independently (inner first, then outer)
+
+**Design rule:** Inner loop should be **5-10 times faster** than outer loop to ensure proper separation.
+
+```
+Speed loop bandwidth: ~50 Hz → Current loop bandwidth: ~500 Hz
+```
+
+### 6.2 Why FOC Works - The Decoupling Principle
+
+#### 6.2.1 The Problem with abc Frame Control
+
+Why can't we just control the motor in the natural abc frame? Let's see what happens:
+
+**Motor voltage equations in abc frame:**
+```
+Va = Rs·ia + d(ψa)/dt
+Vb = Rs·ib + d(ψb)/dt
+Vc = Rs·ic + d(ψc)/dt
+```
+
+Where the flux linkages ψa, ψb, ψc depend on:
+- Stator currents (ia, ib, ic) through self and mutual inductances
+- Rotor position (θe) through magnet flux
+- Rotor speed (ωe) through back-EMF
+
+**The coupling problem:**
+```
+d(ψa)/dt = La·dia/dt + M·dib/dt + M·dic/dt + d(λm·cos(θe))/dt
+         = La·dia/dt + M·dib/dt + M·dic/dt - λm·ωe·sin(θe)
+```
+
+Notice the issues:
+1. **Time-varying coefficients:** sin(θe), cos(θe) change constantly as motor spins
+2. **Cross-coupling:** Current ia affects flux in phases b and c through mutual inductance M
+3. **Speed dependency:** Back-EMF term ωe·sin(θe) increases with speed
+4. **AC quantities:** All currents and voltages are sinusoidal at electrical frequency
+
+**Result:** Trying to control ia, ib, ic directly is like trying to hit three moving targets that are coupled together and oscillating at high frequency. Very difficult!
+
+#### 6.2.2 The Magic of the dq Transformation
+
+Now let's see the same system in the dq (rotor reference) frame:
+
+**Voltage equations in dq frame:**
+```
+Vd = Rs·id + Ld·did/dt - ωe·Lq·iq
+Vq = Rs·iq + Lq·diq/dt + ωe·Ld·id + ωe·λm
+```
+
+**Torque equation:**
+```
+τ = (3/2)·P·[λm·iq + (Ld - Lq)·id·iq]
+```
+
+**What changed? Everything got better:**
+
+1. **DC quantities:** In steady state, id and iq are constants (not sinusoids!)
+2. **Clear separation:**
+   - id controls flux (magnetization)
+   - iq controls torque
+3. **Speed terms become predictable:** ωe·Lq·iq and ωe·Ld·id can be compensated (feedforward)
+4. **Linear control possible:** PI controllers work excellently on DC signals
+
+#### 6.2.3 The Physical Interpretation
+
+Let's understand what's happening physically:
+
+**In the abc frame:**
+- We're standing still while the rotor magnetic field spins past us
+- The magnetic field looks like a rotating wave
+- To control it, we have to generate 3-phase sinusoidal currents at exactly the right frequency, phase, and amplitude
+- It's like trying to push a spinning merry-go-round by running alongside it
+
+**In the dq frame:**
+- We're riding on the rotor (rotating with it)
+- The rotor magnetic field is now stationary relative to us
+- To control it, we just maintain constant DC currents in d and q directions
+- It's like sitting on the merry-go-round and simply pushing in a fixed direction
+
+**Analogy:** Imagine you're trying to paint a specific spot on a spinning wheel:
+- **abc frame:** You stand still and try to time your brush strokes as the spot spins past - very hard!
+- **dq frame:** You rotate with the wheel and the spot is now stationary - easy!
+
+#### 6.2.4 Decoupling in Detail
+
+For a **surface-mounted PMSM** (SPMSM), where Ld ≈ Lq ≈ L:
+
+```
+Vd = Rs·id + L·did/dt - ωe·L·iq       [d-axis voltage equation]
+Vq = Rs·iq + L·diq/dt + ωe·L·id + ωe·λm   [q-axis voltage equation]
+
+τ = (3/2)·P·λm·iq                      [torque equation]
+```
+
+**Notice:**
+1. **id affects Vq:** Through the term ωe·L·id
+2. **iq affects Vd:** Through the term -ωe·L·iq
+3. **Only iq affects torque:** τ is proportional to iq (if id = 0)
+
+**The FOC solution:**
+
+We can achieve **complete decoupling** by:
+
+1. **Set id* = 0:** This maximizes torque per ampere for SPMSMs
+2. **Control iq to control torque:** τ = (3/2)·P·λm·iq
+3. **Add feedforward compensation:**
+   ```
+   Vd_ff = -ωe·L·iq     [compensate iq effect on d-axis]
+   Vq_ff = ωe·L·id + ωe·λm  [compensate id effect and back-EMF on q-axis]
+   ```
+
+**With feedforward compensation:**
+```
+Vd_total = Vd_PI + Vd_ff = Rs·id + L·did/dt
+Vq_total = Vq_PI + Vq_ff = Rs·iq + L·diq/dt
+```
+
+Now the equations are **completely decoupled!**
+- Vd controls id independently
+- Vq controls iq independently
+- iq controls torque independently
+
+**This is why FOC works:** We've transformed a complex, coupled, time-varying AC system into two simple, decoupled, time-invariant DC systems.
+
+### 6.3 The id=0 Control Strategy for Surface PMSMs
+
+#### 6.3.1 Why Set id = 0?
+
+For surface-mounted PMSMs (SPMSMs) where Ld ≈ Lq, the torque equation is:
+
+```
+τ = (3/2)·P·λm·iq
+```
+
+Notice that torque depends **only on iq**, not on id. So what does id do?
+
+**The d-axis current id:**
+- Aligns with the rotor magnetic field direction
+- Creates flux in the same direction as the permanent magnets
+- Does **not** contribute to torque (for SPMSMs)
+- Increases copper losses: P_loss = Rs·(id² + iq²)
+
+**Conclusion:** For maximum efficiency, we should set **id = 0** and use **only iq for torque control**.
+
+**Physical interpretation:**
+- id = 0 means no current in the direction of the rotor field
+- All current is perpendicular to the rotor field (iq direction)
+- This creates maximum torque per ampere
+- It's like pushing a door: push perpendicular to the hinge (efficient) vs. pushing toward the hinge (wasteful)
+
+#### 6.3.2 Control Law for id=0 Strategy
+
+**Step 1: Set d-axis reference to zero**
+```
+i*d = 0  (always)
+```
+
+**Step 2: Calculate q-axis reference from torque command**
+```
+τ* = (3/2)·P·λm·i*q
+
+Therefore:
+i*q = τ* / [(3/2)·P·λm]
+     = 2·τ* / (3·P·λm)
+```
+
+Or, if we have a speed controller:
+```
+i*q = Speed_PI(ω_ref - ω_measured)
+```
+
+**Step 3: Current controllers force id and iq to track references**
+```
+V*d = PI_d(i*d - id) + Vd_ff
+V*q = PI_q(i*q - iq) + Vq_ff
+```
+
+Where the feedforward terms are:
+```
+Vd_ff = -ωe·Lq·iq
+Vq_ff = ωe·Ld·id + ωe·λm ≈ ωe·λm  (since id ≈ 0)
+```
+
+#### 6.3.3 Maximum Torque Per Ampere (MTPA)
+
+The id=0 strategy is actually a special case of **Maximum Torque Per Ampere (MTPA)** control.
+
+**Total current magnitude:**
+```
+I_total = √(id² + iq²)
+```
+
+**For SPMSM with id=0:**
+```
+I_total = |iq|
+τ = (3/2)·P·λm·iq
+
+Torque per ampere = τ / I_total = (3/2)·P·λm
+```
+
+This is the **maximum possible** torque per ampere for an SPMSM!
+
+**Graphical interpretation:**
+
+```
+      iq
+       ↑
+       │
+       │   ×  Operating point (id=0, iq>0)
+       │   │
+       │   │ I_total
+       │   │
+───────┼───┴──────→ id
+       │
+
+Torque contours (hyperbolas): τ = (3/2)·P·λm·iq
+Current limit circle: id² + iq² = I²_max
+
+For SPMSM, MTPA trajectory is the vertical line id=0
+```
+
+#### 6.3.4 Limitations of id=0 Strategy
+
+The id=0 strategy works perfectly **below base speed**, but has limitations:
+
+**1. Voltage limit at high speed:**
+
+As speed increases, back-EMF increases:
+```
+Vq_required ≈ ωe·λm + Rs·iq + Lq·diq/dt
+```
+
+Eventually, Vq_required exceeds available inverter voltage:
+```
+√(Vd² + Vq²) ≤ Vdc/√3
+```
+
+**Solution:** Field weakening (inject negative id to reduce flux)
+
+**2. Not optimal for IPMSMs:**
+
+For interior PMSMs where Ld < Lq, the torque equation is:
+```
+τ = (3/2)·P·[λm·iq + (Ld - Lq)·id·iq]
+                     └─ Reluctance torque
+```
+
+Negative id can actually **increase** total torque due to reluctance torque.
+
+**Solution:** MTPA optimization algorithm (covered in advanced topics)
+
+**3. Position detection at standstill:**
+
+With id=0, there's no excitation in the d-axis, making sensorless position estimation difficult at zero speed.
+
+**Solution:** Inject small id during startup, or use high-frequency injection methods
+
+#### 6.3.5 Practical Implementation Considerations
+
+**Current limit handling:**
+
+Even with id*=0, the actual id might not be exactly zero. We need to limit total current:
+
+```
+I_max = √(i*d² + i*q²)
+
+If I_max > I_rated:
+    scale_factor = I_rated / I_max
+    i*d = i*d × scale_factor
+    i*q = i*q × scale_factor
+```
+
+**Anti-windup:**
+
+When voltage saturates, PI integrators must not wind up:
+
+```matlab
+% Current PI with anti-windup
+error = i_ref - i_measured
+proportional = Kp * error
+integral = integral + Ki * error * Ts
+
+% Calculate desired voltage
+v_desired = proportional + integral
+
+% Apply voltage limit
+v_limited = saturate(v_desired, V_max)
+
+% Back-calculate to prevent windup
+if v_limited != v_desired:
+    integral = v_limited - proportional
+```
+
+**Startup sequence:**
+
+1. **Align rotor:** Apply dc current in phase A for 100-500 ms to align rotor
+2. **Ramp speed:** Slowly increase ω_ref from 0 to target
+3. **Monitor currents:** Ensure id stays near 0, iq follows command
+4. **Check position:** Verify Hall states match expected sequence
+
+---
+
+*To be continued in Section 6.4: Current Control Loop Design*
+
